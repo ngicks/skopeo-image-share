@@ -1,14 +1,14 @@
 lockfile_version: '1'
-generated_at: '2026-04-22T11:58:35.465377+00:00'
+generated_at: '2026-04-25T12:12:05.473317+00:00'
 apm_version: 0.9.0
 dependencies:
 - repo_url: ngicks/dotfiles
   host: github.com
-  resolved_commit: 1f8ff503e2d3cac202fe39bf4a424d71f67b61ff
+  resolved_commit: 32158e61ab1f9fecf3675cc16e8113dc3701a9a2
   virtual_path: agents/skills/scaffold-go-cobra
   is_virtual: true
   package_type: claude_skill
   deployed_files:
   - .agents/skills/scaffold-go-cobra
   - .claude/skills/scaffold-go-cobra
-  content_hash: sha256:8405a3ab5d8f889258c0bae86f9163782be74db32c072a0d955685716e22f575
+  content_hash: sha256:cd450751c1ac91c857987bfbb092384b1be75a7fc558a53d2ea6d59284b01829

@@ -1,0 +1,92 @@
+package skopeoimageshare
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// writeShim writes a /bin/sh script named `name` into a temp dir and
+// prepends that dir to $PATH. Returns the temp dir for callers that
+// need to drop fixture files alongside.
+func writeShim(t *testing.T, name, body string) string {
+	t.Helper()
+	dir := t.TempDir()
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+		t.Fatalf("writeShim: %v", err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	return dir
+}
+
+func TestLocalRunner_OK(t *testing.T) {
+	writeShim(t, "fake", `printf "hello stdout"`)
+	r := NewLocalRunner("fake")
+	out, err := r.Run(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != "hello stdout" {
+		t.Errorf("got %q", out)
+	}
+}
+
+func TestLocalRunner_Error(t *testing.T) {
+	writeShim(t, "fake", `printf "boom\n" >&2; exit 7`)
+	r := NewLocalRunner("fake")
+	_, err := r.Run(context.Background(), []string{"--something"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var ce *CommandError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected *CommandError, got %T", err)
+	}
+	if ce.ExitCode != 7 {
+		t.Errorf("exit = %d, want 7", ce.ExitCode)
+	}
+	if !strings.Contains(ce.StderrTail, "boom") {
+		t.Errorf("stderr tail = %q", ce.StderrTail)
+	}
+	if !strings.Contains(ce.Error(), "exit 7") {
+		t.Errorf("Error() does not contain exit code: %q", ce.Error())
+	}
+}
+
+func TestRedactArgv(t *testing.T) {
+	t.Parallel()
+	in := []string{
+		"skopeo", "copy",
+		"--creds", "user:secret",
+		"--src-creds=u:p",
+		"--authfile=/path",
+		"some-other-flag",
+	}
+	got := redactArgv(in)
+	if got[3] != "<redacted>" {
+		t.Errorf("--creds value not redacted: %v", got)
+	}
+	if got[4] != "--src-creds=<redacted>" {
+		t.Errorf("--src-creds= not redacted: %v", got)
+	}
+	if got[5] != "--authfile=<redacted>" {
+		t.Errorf("--authfile= not redacted: %v", got)
+	}
+	if got[6] != "some-other-flag" {
+		t.Errorf("benign flag was rewritten: %v", got)
+	}
+}
+
+func TestTailBytes(t *testing.T) {
+	t.Parallel()
+	if got := tailBytes([]byte("abcdef"), 100); got != "abcdef" {
+		t.Errorf("short input rewrote: %q", got)
+	}
+	if got := tailBytes([]byte("abcdef"), 3); got != "def" {
+		t.Errorf("tail mismatch: %q", got)
+	}
+}
