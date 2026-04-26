@@ -166,33 +166,3 @@ func TestNextDelay(t *testing.T) {
 	}
 }
 
-func TestParseSSHTarget(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		in   string
-		user string
-		host string
-		port int
-	}{
-		{"alice@host", "alice", "host", 0},
-		{"alice@host:2222", "alice", "host", 2222},
-		{"u@1.2.3.4:22", "u", "1.2.3.4", 22},
-	}
-	for _, tc := range cases {
-		got, err := ParseSSHTarget(tc.in)
-		if err != nil {
-			t.Errorf("%q: %v", tc.in, err)
-			continue
-		}
-		if got.User != tc.user || got.Host != tc.host || got.Port != tc.port {
-			t.Errorf("%q: got %+v", tc.in, got)
-		}
-	}
-
-	if _, err := ParseSSHTarget("nohost"); err == nil {
-		t.Error("expected error for missing user@")
-	}
-	if _, err := ParseSSHTarget("u@host:bad"); err == nil {
-		t.Error("expected error for bad port")
-	}
-}

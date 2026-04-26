@@ -4,6 +4,11 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ngicks/skopeo-image-share/pkg/cli"
+	"github.com/ngicks/skopeo-image-share/pkg/cli/docker"
+	"github.com/ngicks/skopeo-image-share/pkg/cli/skopeo"
+	"github.com/ngicks/skopeo-image-share/pkg/cli/ssh"
+	"github.com/ngicks/skopeo-image-share/pkg/sftpfs"
 	"github.com/ngicks/skopeo-image-share/pkg/skopeoimageshare"
 	"github.com/spf13/cobra"
 )
@@ -19,7 +24,6 @@ var pullFlags struct {
 	images          []string
 	localTransport  string
 	localPath       string
-	remoteHost      string
 	remoteTransport string
 	remotePath      string
 	dataDir         string
@@ -38,7 +42,7 @@ func init() {
 	f.StringSliceVar(&pullFlags.images, "image", nil, "image ref to pull (repeatable)")
 	f.StringVar(&pullFlags.localTransport, "local-transport", "containers-storage", "containers-storage|docker-daemon|oci")
 	f.StringVar(&pullFlags.localPath, "local-path", "", "local oci: dir (only when --local-transport=oci)")
-	f.StringVar(&pullFlags.remoteHost, "remote-host", "", "user@host[:port]")
+	bindRemoteTargetFlags(f)
 	f.StringVar(&pullFlags.remoteTransport, "remote-transport", "containers-storage", "containers-storage|docker-daemon|oci")
 	f.StringVar(&pullFlags.remotePath, "remote-path", "", "remote oci: dir (only when --remote-transport=oci)")
 	f.StringVar(&pullFlags.dataDir, "data-dir", "", "override $XDG_DATA_HOME data dir")
@@ -53,21 +57,18 @@ func init() {
 func runPull(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
-	if pullFlags.remoteHost == "" {
-		return fmt.Errorf("--remote-host is required")
-	}
 	if len(pullFlags.images) == 0 && len(args) == 0 {
 		return fmt.Errorf("no images: use --image (repeatable) or positional args")
 	}
 	images := append([]string(nil), pullFlags.images...)
 	images = append(images, args...)
 
-	target, err := skopeoimageshare.ParseSSHTarget(pullFlags.remoteHost)
-	if err != nil {
+	if err := validateRemoteTarget(remoteTarget); err != nil {
 		return err
 	}
 
 	localBase := pullFlags.dataDir
+	var err error
 	if localBase == "" {
 		localBase, err = skopeoimageshare.DefaultBaseDir()
 		if err != nil {
@@ -79,17 +80,17 @@ func runPull(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if err := skopeoimageshare.ProbeSSH(ctx, target.Host); err != nil {
+	if err := ssh.Probe(ctx, remoteTarget); err != nil {
 		return fmt.Errorf("ssh probe: %w", err)
 	}
 
-	remote, err := skopeoimageshare.NewRemote(ctx, target)
+	remote, err := skopeoimageshare.NewRemote(ctx, remoteTarget)
 	if err != nil {
 		return err
 	}
 	defer remote.Close()
 
-	localSk := skopeoimageshare.NewSkopeo(skopeoimageshare.NewLocalRunner("skopeo"))
+	localSk := skopeo.New(cli.NewLocalRunner("skopeo"))
 	remoteSk := remote.Skopeo()
 
 	if _, err := localSk.Version(ctx); err != nil {
@@ -132,14 +133,14 @@ func runPull(cmd *cobra.Command, args []string) error {
 	}
 	switch pullFlags.localTransport {
 	case skopeoimageshare.TransportContainersStorage:
-		local.Lister = skopeoimageshare.NewPodman(skopeoimageshare.NewLocalRunner("podman"))
+		local.Lister = docker.NewPodman(cli.NewLocalRunner("podman"))
 	case skopeoimageshare.TransportDockerDaemon:
-		local.Lister = skopeoimageshare.NewDocker(skopeoimageshare.NewLocalRunner("docker"))
+		local.Lister = docker.NewDocker(cli.NewLocalRunner("docker"))
 	}
 
 	peer := skopeoimageshare.PullPeerSide{
 		Skopeo:    remoteSk,
-		FS:        skopeoimageshare.NewSFTPFS(remote.SFTPClient(), remoteBase),
+		FS:        sftpfs.New(remote.SFTPClient(), remoteBase),
 		BaseDir:   remoteBase,
 		Transport: pullFlags.remoteTransport,
 		OCIPath:   pullFlags.remotePath,

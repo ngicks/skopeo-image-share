@@ -1,4 +1,9 @@
-package skopeoimageshare
+// Package docker holds typed wrappers over the docker and podman
+// CLIs. The two binaries are largely API-compatible (podman's
+// `image ls --format json` differs in detail from docker's), so the
+// wrappers share a package but not a single implementation: separate
+// types make the on-disk JSON shape differences explicit.
+package docker
 
 import (
 	"bytes"
@@ -8,15 +13,17 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/ngicks/skopeo-image-share/pkg/cli"
 )
 
 // Docker is a typed wrapper over the docker CLI.
 type Docker struct {
-	Runner CommandRunner
+	Runner cli.Runner
 }
 
 // NewDocker returns a [Docker] driving r.
-func NewDocker(r CommandRunner) *Docker { return &Docker{Runner: r} }
+func NewDocker(r cli.Runner) *Docker { return &Docker{Runner: r} }
 
 // Version returns the trimmed `docker --version` output.
 func (d *Docker) Version(ctx context.Context) (string, error) {
@@ -36,50 +43,17 @@ type dockerImage struct {
 	Digest     string `json:"Digest"`
 }
 
-// dockerInspectImage is the subset of `docker image inspect` we'd need
-// if we ever switched to that strategy: an Id + RepoTags list per
-// image, returned as a single JSON array.
+// dockerInspectImage is the subset of `docker image inspect` (single
+// JSON array) we'd need if we ever switched to that strategy.
 type dockerInspectImage struct {
 	Id       string   `json:"Id"`
 	RepoTags []string `json:"RepoTags"`
 }
 
-// ParseDockerImageInspect parses `docker image inspect` output
-// (single JSON array). Exposed for fixture-based tests; the live
-// enumeration path uses [Docker.ImageLs].
-func ParseDockerImageInspect(out []byte) ([]dockerInspectImage, error) {
-	var imgs []dockerInspectImage
-	if err := json.Unmarshal(out, &imgs); err != nil {
-		return nil, fmt.Errorf("docker: parse image inspect json: %w", err)
-	}
-	return imgs, nil
-}
-
-// imageRefsFromDockerInspect flattens RepoTags across the image list,
-// deduplicating and skipping `<none>:<none>` markers.
-func imageRefsFromDockerInspect(imgs []dockerInspectImage) []string {
-	seen := map[string]struct{}{}
-	var refs []string
-	for _, img := range imgs {
-		for _, t := range img.RepoTags {
-			if t == "" || t == "<none>:<none>" {
-				continue
-			}
-			if _, dup := seen[t]; dup {
-				continue
-			}
-			seen[t] = struct{}{}
-			refs = append(refs, t)
-		}
-	}
-	return refs
-}
-
 // ImageLs returns image refs visible to docker. `docker image ls
 // --format json` emits one JSON object per line (NDJSON). Refs are
-// reconstructed as <Repository>:<Tag>; entries with Repository="<none>"
-// or Tag="<none>" are skipped (Docker uses these markers for dangling
-// images).
+// reconstructed as <Repository>:<Tag>; entries with `<none>`
+// repo/tag (Docker's marker for dangling images) are skipped.
 func (d *Docker) ImageLs(ctx context.Context) ([]string, error) {
 	out, err := d.Runner.Run(ctx, []string{"image", "ls", "--format", "json"})
 	if err != nil {
@@ -108,6 +82,16 @@ func ParseDockerImageLs(out []byte) ([]dockerImage, error) {
 	}
 }
 
+// ParseDockerImageInspect parses `docker image inspect` output
+// (single JSON array). Exposed for fixture-based tests.
+func ParseDockerImageInspect(out []byte) ([]dockerInspectImage, error) {
+	var imgs []dockerInspectImage
+	if err := json.Unmarshal(out, &imgs); err != nil {
+		return nil, fmt.Errorf("docker: parse image inspect json: %w", err)
+	}
+	return imgs, nil
+}
+
 func imageRefsFromDockerList(imgs []dockerImage) []string {
 	seen := map[string]struct{}{}
 	var refs []string
@@ -124,6 +108,26 @@ func imageRefsFromDockerList(imgs []dockerImage) []string {
 		}
 		seen[ref] = struct{}{}
 		refs = append(refs, ref)
+	}
+	return refs
+}
+
+// imageRefsFromDockerInspect flattens RepoTags across the image list,
+// deduplicating and skipping `<none>:<none>` markers.
+func imageRefsFromDockerInspect(imgs []dockerInspectImage) []string {
+	seen := map[string]struct{}{}
+	var refs []string
+	for _, img := range imgs {
+		for _, t := range img.RepoTags {
+			if t == "" || t == "<none>:<none>" {
+				continue
+			}
+			if _, dup := seen[t]; dup {
+				continue
+			}
+			seen[t] = struct{}{}
+			refs = append(refs, t)
+		}
 	}
 	return refs
 }

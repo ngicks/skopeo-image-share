@@ -1,4 +1,4 @@
-package skopeoimageshare
+package cli
 
 import (
 	"context"
@@ -10,8 +10,7 @@ import (
 )
 
 // writeShim writes a /bin/sh script named `name` into a temp dir and
-// prepends that dir to $PATH. Returns the temp dir for callers that
-// need to drop fixture files alongside.
+// prepends that dir to $PATH.
 func writeShim(t *testing.T, name, body string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -66,7 +65,7 @@ func TestRedactArgv(t *testing.T) {
 		"--authfile=/path",
 		"some-other-flag",
 	}
-	got := redactArgv(in)
+	got := RedactArgv(in)
 	if got[3] != "<redacted>" {
 		t.Errorf("--creds value not redacted: %v", got)
 	}
@@ -83,10 +82,10 @@ func TestRedactArgv(t *testing.T) {
 
 func TestTailBytes(t *testing.T) {
 	t.Parallel()
-	if got := tailBytes([]byte("abcdef"), 100); got != "abcdef" {
+	if got := TailBytes([]byte("abcdef"), 100); got != "abcdef" {
 		t.Errorf("short input rewrote: %q", got)
 	}
-	if got := tailBytes([]byte("abcdef"), 3); got != "def" {
+	if got := TailBytes([]byte("abcdef"), 3); got != "def" {
 		t.Errorf("tail mismatch: %q", got)
 	}
 }

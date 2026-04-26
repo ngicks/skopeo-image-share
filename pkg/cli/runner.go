@@ -1,4 +1,9 @@
-package skopeoimageshare
+// Package cli holds the external-command runner abstraction shared
+// by [./skopeo] and [./docker]. The [Runner] interface is the
+// minimal contract those wrappers depend on; [LocalRunner] runs on
+// this machine via [exec.CommandContext] and [SshRunner] runs on a
+// remote host by spawning the system ssh binary (see [./ssh]).
+package cli
 
 import (
 	"bytes"
@@ -11,38 +16,40 @@ import (
 	"github.com/ngicks/go-common/contextkey"
 )
 
-// CommandRunner runs an external command argv (excluding argv[0]) and
-// returns its captured stdout. Implementations are responsible for argv
-// redaction in logs and for error wrapping (typically [*CommandError]).
-type CommandRunner interface {
-	// Run executes argv and returns the captured stdout. argv[0] is the
-	// "logical" subcommand list — the implementation owns choice of
-	// executable name, working directory, env, etc.
+// Runner runs an external command argv (excluding argv[0]) and
+// returns its captured stdout. Implementations are responsible for
+// argv redaction in logs and for error wrapping (typically
+// [*CommandError]).
+type Runner interface {
+	// Run executes argv and returns the captured stdout. argv[0] is
+	// the "logical" subcommand list — the implementation owns choice
+	// of executable name, working directory, env, etc.
 	Run(ctx context.Context, argv []string) ([]byte, error)
 }
 
-// LocalRunner is a [CommandRunner] backed by [exec.CommandContext].
-// The exe name is the binary on $PATH (e.g. "skopeo", "podman", "docker").
+// LocalRunner is a [Runner] backed by [exec.CommandContext]. The
+// exe name is the binary on $PATH (e.g. "skopeo", "podman",
+// "docker").
 type LocalRunner struct {
 	Exe string
-	// StderrTailBytes caps how much trailing stderr is included in the
-	// returned [*CommandError] on non-zero exit. Default 4096.
+	// StderrTailBytes caps how much trailing stderr is included in
+	// the returned [*CommandError] on non-zero exit. Default 4096.
 	StderrTailBytes int
 }
 
-// NewLocalRunner returns a [LocalRunner] for exe (looked up in $PATH at
-// process invocation time).
+// NewLocalRunner returns a [LocalRunner] for exe (looked up in $PATH
+// at process invocation time).
 func NewLocalRunner(exe string) *LocalRunner {
 	return &LocalRunner{Exe: exe, StderrTailBytes: 4096}
 }
 
-// Run implements [CommandRunner].
+// Run implements [Runner].
 func (r *LocalRunner) Run(ctx context.Context, argv []string) ([]byte, error) {
 	full := append([]string{r.Exe}, argv...)
 	logger := contextkey.ValueSlogLoggerDefault(ctx)
 	logger.LogAttrs(ctx, slog.LevelDebug, "exec",
 		slog.String("exe", r.Exe),
-		slog.Any("argv", redactArgv(full)),
+		slog.Any("argv", RedactArgv(full)),
 	)
 
 	cmd := exec.CommandContext(ctx, r.Exe, argv...)
@@ -68,17 +75,18 @@ func (r *LocalRunner) Run(ctx context.Context, argv []string) ([]byte, error) {
 			tail = 4096
 		}
 		return stdout.Bytes(), &CommandError{
-			Argv:       redactArgv(full),
+			Argv:       RedactArgv(full),
 			ExitCode:   exit,
-			StderrTail: tailBytes(stderr.Bytes(), tail),
+			StderrTail: TailBytes(stderr.Bytes(), tail),
 			Err:        err,
 		}
 	}
 	return stdout.Bytes(), nil
 }
 
-// CommandError wraps a non-zero exit from an external process. The Err
-// field is the underlying error from [exec.Cmd.Run] (or equivalent).
+// CommandError wraps a non-zero exit from an external process. The
+// Err field is the underlying error from [exec.Cmd.Run] (or
+// equivalent).
 type CommandError struct {
 	Argv       []string
 	ExitCode   int
@@ -111,11 +119,13 @@ var SensitiveFlags = map[string]struct{}{
 	"--password-stdin": {},
 }
 
-func redactArgv(argv []string) []string {
+// RedactArgv returns a copy of argv with values of [SensitiveFlags]
+// replaced by "<redacted>". Both `--flag value` and `--flag=value`
+// forms are handled.
+func RedactArgv(argv []string) []string {
 	out := make([]string, len(argv))
 	for i, a := range argv {
 		out[i] = a
-		// --flag=value form
 		if eq := strings.IndexByte(a, '='); eq > 0 {
 			if _, sensitive := SensitiveFlags[a[:eq]]; sensitive {
 				out[i] = a[:eq] + "=<redacted>"
@@ -131,7 +141,9 @@ func redactArgv(argv []string) []string {
 	return out
 }
 
-func tailBytes(b []byte, max int) string {
+// TailBytes returns at most max trailing bytes of b as a string.
+// Used to cap the size of stderr captured into a [*CommandError].
+func TailBytes(b []byte, max int) string {
 	if max <= 0 || len(b) <= max {
 		return string(b)
 	}

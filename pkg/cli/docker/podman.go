@@ -1,19 +1,24 @@
-package skopeoimageshare
+package docker
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/ngicks/skopeo-image-share/pkg/cli"
 )
 
-// Podman is a typed wrapper over the podman CLI.
+// Podman is a typed wrapper over the podman CLI. Podman is largely
+// docker-compatible but `podman image ls --format json` returns a
+// JSON array (not NDJSON like docker) and uses Names[] for refs
+// instead of Repository/Tag — hence a separate type.
 type Podman struct {
-	Runner CommandRunner
+	Runner cli.Runner
 }
 
 // NewPodman returns a [Podman] driving r.
-func NewPodman(r CommandRunner) *Podman { return &Podman{Runner: r} }
+func NewPodman(r cli.Runner) *Podman { return &Podman{Runner: r} }
 
 // Version returns the trimmed `podman --version` output.
 func (p *Podman) Version(ctx context.Context) (string, error) {
@@ -24,7 +29,7 @@ func (p *Podman) Version(ctx context.Context) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// podmanImage is the subset of `podman image ls --format json` that we
+// podmanImage is the subset of `podman image ls --format json` we
 // need: per-image refs (Names) plus RepoDigests as a fallback for
 // dangling images.
 type podmanImage struct {
@@ -33,9 +38,9 @@ type podmanImage struct {
 	RepoDigests []string `json:"RepoDigests"`
 }
 
-// ImageLs returns the union of all image refs visible to podman. Output
-// of `podman image ls --format json` is a JSON array; refs come from
-// each image's Names list (RepoTag-style).
+// ImageLs returns the union of all image refs visible to podman.
+// Output of `podman image ls --format json` is a JSON array; refs
+// come from each image's Names list (RepoTag-style).
 func (p *Podman) ImageLs(ctx context.Context) ([]string, error) {
 	out, err := p.Runner.Run(ctx, []string{"image", "ls", "--format", "json"})
 	if err != nil {
@@ -48,8 +53,8 @@ func (p *Podman) ImageLs(ctx context.Context) ([]string, error) {
 	return imageRefsFromPodmanList(imgs), nil
 }
 
-// ParsePodmanImageLs parses `podman image ls --format json` output. It
-// is exposed for unit tests using fixture data.
+// ParsePodmanImageLs parses `podman image ls --format json` output.
+// Exposed for fixture-based tests.
 func ParsePodmanImageLs(out []byte) ([]podmanImage, error) {
 	var imgs []podmanImage
 	if err := json.Unmarshal(out, &imgs); err != nil {

@@ -4,6 +4,10 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ngicks/skopeo-image-share/pkg/cli"
+	"github.com/ngicks/skopeo-image-share/pkg/cli/skopeo"
+	"github.com/ngicks/skopeo-image-share/pkg/cli/ssh"
+	"github.com/ngicks/skopeo-image-share/pkg/sftpfs"
 	"github.com/ngicks/skopeo-image-share/pkg/skopeoimageshare"
 	"github.com/spf13/cobra"
 )
@@ -19,7 +23,6 @@ var pushFlags struct {
 	images          []string
 	localTransport  string
 	localPath       string
-	remoteHost      string
 	remoteTransport string
 	remotePath      string
 	dataDir         string
@@ -38,7 +41,7 @@ func init() {
 	f.StringSliceVar(&pushFlags.images, "image", nil, "image ref to push (repeatable)")
 	f.StringVar(&pushFlags.localTransport, "local-transport", "containers-storage", "containers-storage|docker-daemon|oci")
 	f.StringVar(&pushFlags.localPath, "local-path", "", "local oci: dir (only when --local-transport=oci)")
-	f.StringVar(&pushFlags.remoteHost, "remote-host", "", "user@host[:port]")
+	bindRemoteTargetFlags(f)
 	f.StringVar(&pushFlags.remoteTransport, "remote-transport", "containers-storage", "containers-storage|docker-daemon|oci")
 	f.StringVar(&pushFlags.remotePath, "remote-path", "", "remote oci: dir (only when --remote-transport=oci)")
 	f.StringVar(&pushFlags.dataDir, "data-dir", "", "override $XDG_DATA_HOME data dir")
@@ -53,21 +56,18 @@ func init() {
 func runPush(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
-	if pushFlags.remoteHost == "" {
-		return fmt.Errorf("--remote-host is required")
-	}
 	if len(pushFlags.images) == 0 && len(args) == 0 {
 		return fmt.Errorf("no images: use --image (repeatable) or positional args")
 	}
 	images := append([]string(nil), pushFlags.images...)
 	images = append(images, args...)
 
-	target, err := skopeoimageshare.ParseSSHTarget(pushFlags.remoteHost)
-	if err != nil {
+	if err := validateRemoteTarget(remoteTarget); err != nil {
 		return err
 	}
 
 	localBase := pushFlags.dataDir
+	var err error
 	if localBase == "" {
 		localBase, err = skopeoimageshare.DefaultBaseDir()
 		if err != nil {
@@ -79,17 +79,17 @@ func runPush(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if err := skopeoimageshare.ProbeSSH(ctx, target.Host); err != nil {
+	if err := ssh.Probe(ctx, remoteTarget); err != nil {
 		return fmt.Errorf("ssh probe: %w", err)
 	}
 
-	remote, err := skopeoimageshare.NewRemote(ctx, target)
+	remote, err := skopeoimageshare.NewRemote(ctx, remoteTarget)
 	if err != nil {
 		return err
 	}
 	defer remote.Close()
 
-	localSk := skopeoimageshare.NewSkopeo(skopeoimageshare.NewLocalRunner("skopeo"))
+	localSk := skopeo.New(cli.NewLocalRunner("skopeo"))
 	remoteSk := remote.Skopeo()
 
 	if _, err := localSk.Version(ctx); err != nil {
@@ -132,7 +132,7 @@ func runPush(cmd *cobra.Command, args []string) error {
 	}
 	peer := skopeoimageshare.PushPeerSide{
 		Skopeo:    remoteSk,
-		FS:        skopeoimageshare.NewSFTPFS(remote.SFTPClient(), remoteBase),
+		FS:        sftpfs.New(remote.SFTPClient(), remoteBase),
 		BaseDir:   remoteBase,
 		Transport: pushFlags.remoteTransport,
 		OCIPath:   pushFlags.remotePath,

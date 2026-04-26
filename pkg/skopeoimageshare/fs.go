@@ -10,14 +10,15 @@ import (
 	"github.com/ngicks/go-fsys-helper/fsutil"
 	"github.com/ngicks/go-fsys-helper/vroot"
 	"github.com/ngicks/go-fsys-helper/vroot/osfs"
+	"github.com/ngicks/skopeo-image-share/pkg/sftpfs"
 )
 
 // FS is the filesystem abstraction the orchestrator drives. It is a
 // strict alias of [vroot.Fs] — the local side is satisfied by
 // [*osfs.Unrooted] (rooted at the application's base data dir, with
-// relative paths) and the remote side by [*SFTPFS] (rooted at the
-// peer's base, with relative paths internally translated to absolute
-// SFTP paths).
+// relative paths) and the remote side by [*sftpfs.SftpFs] (rooted at
+// the peer's base, with relative paths internally translated to
+// absolute SFTP paths).
 type FS = vroot.Fs
 
 // File is the per-file shape — alias of [vroot.File].
@@ -50,8 +51,8 @@ func SafeWrite(f FS, p string, data []byte) error {
 			IgnoreCloseErr: true,
 		}
 		return opt.Copy(f, p, bytes.NewReader(data), 0o644, nil, nil)
-	case *SFTPFS:
-		opt := fsutil.SafeWriteOption[*SFTPFS, vroot.File]{}
+	case *sftpfs.SftpFs:
+		opt := fsutil.SafeWriteOption[*sftpfs.SftpFs, vroot.File]{}
 		return opt.Copy(f, p, bytes.NewReader(data), 0o644, nil, nil)
 	default:
 		return fmt.Errorf("safewrite: unsupported FS %T", f)
@@ -67,7 +68,7 @@ func readAllVia(f FS, p string) ([]byte, error) {
 
 // readDirVia is the FS-level ReadDir helper. It wraps vroot.ReadDir,
 // which uses the optional ReadDirFs fast path when available
-// (*SFTPFS exposes one) and falls back to OpenFile + File.ReadDir.
+// (*sftpfs.SftpFs exposes one) and falls back to OpenFile + File.ReadDir.
 func readDirVia(f FS, p string) ([]fs.DirEntry, error) {
 	return vroot.ReadDir(f, p)
 }

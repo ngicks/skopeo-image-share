@@ -96,7 +96,8 @@ Each item is sized to be a single PR-scale commit. Mark with `[x]` when done.
 
 ## Phase 3 — Remote (`pkg/skopeoimageshare/remote.go`)
 
-- [x] **3.1** SSH dial: given `user@host[:port]`, build an `*ssh.Client`
+- [x] **3.1** SSH dial: given either an ssh config name or separate
+  host/user/port settings, build an `*ssh.Client`
   using `golang.org/x/crypto/ssh` + default keys (`~/.ssh/id_*`) +
   ssh-agent via `SSH_AUTH_SOCK`. `known_hosts` verification via
   `golang.org/x/crypto/ssh/knownhosts`. No `~/.ssh/config` parsing in

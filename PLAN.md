@@ -251,7 +251,10 @@ Inputs (flags; exact names subject to review):
 --image <repo:tag>                     (repeatable, or positional args)
 --local-transport  containers-storage|docker-daemon|oci
 --local-path <str>                     (only for oci:)
---remote-host  user@host[:port]
+--remote-name  ssh-config-name
+--remote-host  host
+--remote-user  user
+--remote-port  port
 --remote-transport containers-storage|docker-daemon|oci
 --remote-path <str>                    (only for oci:)
 --data-dir   <path>                    (override XDG default)

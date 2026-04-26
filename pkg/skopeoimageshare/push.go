@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ngicks/go-common/contextkey"
+	"github.com/ngicks/skopeo-image-share/pkg/cli"
 )
 
 // PushArgs configures one [Push] invocation. Flags surfaced via the
@@ -431,8 +432,8 @@ func remoteDumpDirPosix(base string, r ImageRef) string {
 }
 
 // relRemoteDumpDir returns the peer-side dump dir relative to the
-// peer base — suitable for FS calls on a [*SFTPFS] rooted at peer
-// base.
+// peer base — suitable for FS calls on a [*sftpfs.SftpFs] rooted at
+// peer base.
 func relRemoteDumpDir(r ImageRef) string {
 	if r.IsDigested() {
 		return RelDigestPath(r.Host, r.Path, r.Digest)
@@ -456,7 +457,7 @@ func defaultIsRetryable(err error) bool {
 	if errors.Is(err, io.EOF) {
 		return false
 	}
-	var ce *CommandError
+	var ce *cli.CommandError
 	if errors.As(err, &ce) {
 		return false
 	}

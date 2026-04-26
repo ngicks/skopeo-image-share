@@ -53,26 +53,27 @@ go build ./cmd/skopeo-image-share
 # Push one image (containers-storage <-> containers-storage)
 ./skopeo-image-share push \
     --image docker.io/library/busybox:latest \
-    --remote-host alice@db1.example
+    --remote-name db1
 
 # Push a docker-daemon image to a peer's containers-storage
 ./skopeo-image-share push \
     --image my-app:dev \
     --local-transport docker-daemon \
     --remote-transport containers-storage \
-    --remote-host alice@db1.example
+    --remote-user alice \
+    --remote-host db1.example
 
 # Pull from a peer's docker-daemon to local containers-storage
 ./skopeo-image-share pull \
     --image registry/team/app:v1 \
     --remote-transport docker-daemon \
     --local-transport containers-storage \
-    --remote-host alice@db1.example
+    --remote-name db1
 
 # Plan-only (no mutation anywhere)
 ./skopeo-image-share push --dry-run \
     --image ghcr.io/ngicks/some-tool:v1 \
-    --remote-host alice@db1.example
+    --remote-name db1
 ```
 
 ## Supported transports (v1)

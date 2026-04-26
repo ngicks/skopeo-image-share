@@ -1,20 +1,22 @@
-package skopeoimageshare
+// Package skopeo is a typed wrapper over the skopeo CLI. It does not
+// look at flag spellings or the installed skopeo version; runtime
+// errors surface via the [Runner] implementation.
+package skopeo
 
 import (
 	"context"
 	"strings"
+
+	"github.com/ngicks/skopeo-image-share/pkg/cli"
 )
 
-// Skopeo is a typed wrapper over the skopeo CLI. The wrapper does not
-// look at flag spellings or version — verifying those against the
-// installed skopeo is out of scope for the unit tests; runtime errors
-// surface as [*CommandError].
+// Skopeo is a typed wrapper over the skopeo CLI.
 type Skopeo struct {
-	Runner CommandRunner
+	Runner cli.Runner
 }
 
-// NewSkopeo returns a [Skopeo] that drives r.
-func NewSkopeo(r CommandRunner) *Skopeo { return &Skopeo{Runner: r} }
+// New returns a [Skopeo] that drives r.
+func New(r cli.Runner) *Skopeo { return &Skopeo{Runner: r} }
 
 // Version returns the trimmed `skopeo --version` output.
 func (s *Skopeo) Version(ctx context.Context) (string, error) {
