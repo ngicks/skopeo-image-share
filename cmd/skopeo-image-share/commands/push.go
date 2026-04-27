@@ -4,10 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ngicks/skopeo-image-share/pkg/cli"
-	"github.com/ngicks/skopeo-image-share/pkg/cli/skopeo"
 	"github.com/ngicks/skopeo-image-share/pkg/cli/ssh"
-	"github.com/ngicks/skopeo-image-share/pkg/sftpfs"
 	"github.com/ngicks/skopeo-image-share/pkg/skopeoimageshare"
 	"github.com/spf13/cobra"
 )
@@ -66,16 +63,12 @@ func runPush(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	localBase := pushFlags.dataDir
-	var err error
-	if localBase == "" {
-		localBase, err = skopeoimageshare.DefaultBaseDir()
-		if err != nil {
-			return err
-		}
-	}
-	localStore := skopeoimageshare.NewStore(localBase)
-	if err := localStore.EnsureLayout(ctx); err != nil {
+	local, err := skopeoimageshare.NewLocal(ctx, skopeoimageshare.LocalConfig{
+		BaseDir:   pushFlags.dataDir,
+		Transport: pushFlags.localTransport,
+		OCIPath:   pushFlags.localPath,
+	})
+	if err != nil {
 		return err
 	}
 
@@ -83,25 +76,21 @@ func runPush(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("ssh probe: %w", err)
 	}
 
-	remote, err := skopeoimageshare.NewRemote(ctx, remoteTarget)
+	remote, err := skopeoimageshare.NewRemote(ctx, skopeoimageshare.RemoteConfig{
+		Target:    remoteTarget,
+		Transport: pushFlags.remoteTransport,
+		OCIPath:   pushFlags.remotePath,
+	})
 	if err != nil {
 		return err
 	}
 	defer remote.Close()
 
-	localSk := skopeo.New(cli.NewLocalRunner("skopeo"))
-	remoteSk := remote.Skopeo()
-
-	if _, err := localSk.Version(ctx); err != nil {
+	if _, err := local.Skopeo().Version(ctx); err != nil {
 		return fmt.Errorf("local skopeo: %w", err)
 	}
-	if _, err := remoteSk.Version(ctx); err != nil {
+	if _, err := remote.Skopeo().Version(ctx); err != nil {
 		return fmt.Errorf("remote skopeo: %w", err)
-	}
-
-	remoteBase, err := remote.ResolveBaseDir(ctx)
-	if err != nil {
-		return fmt.Errorf("remote base dir: %w", err)
 	}
 
 	pa := skopeoimageshare.PushArgs{
@@ -110,7 +99,7 @@ func runPush(cmd *cobra.Command, args []string) error {
 		LocalPath:       pushFlags.localPath,
 		RemoteTransport: pushFlags.remoteTransport,
 		RemotePath:      pushFlags.remotePath,
-		DataDir:         localBase,
+		DataDir:         local.BaseDir,
 		Jobs:            pushFlags.jobs,
 		DryRun:          pushFlags.dryRun,
 		AssumeRemoteHas: pushFlags.assumeRemoteHas,
@@ -119,32 +108,7 @@ func runPush(cmd *cobra.Command, args []string) error {
 		RetryMaxDelay:   pushFlags.retryMaxDelay,
 	}
 
-	localFS, err := skopeoimageshare.NewLocalFS(localBase)
-	if err != nil {
-		return err
-	}
-	local := skopeoimageshare.PushSide{
-		Skopeo:    localSk,
-		FS:        localFS,
-		BaseDir:   localBase,
-		Transport: pushFlags.localTransport,
-		OCIPath:   pushFlags.localPath,
-	}
-	peer := skopeoimageshare.PushPeerSide{
-		Skopeo:    remoteSk,
-		FS:        sftpfs.New(remote.SFTPClient(), remoteBase),
-		BaseDir:   remoteBase,
-		Transport: pushFlags.remoteTransport,
-		OCIPath:   pushFlags.remotePath,
-	}
-	switch pushFlags.remoteTransport {
-	case skopeoimageshare.TransportContainersStorage:
-		peer.Lister = remote.Podman()
-	case skopeoimageshare.TransportDockerDaemon:
-		peer.Lister = remote.Docker()
-	}
-
-	res, err := skopeoimageshare.Push(ctx, pa, local, peer)
+	res, err := skopeoimageshare.Push(ctx, pa, local.PushSide(), remote.PushPeerSide())
 	for _, r := range res.Reports {
 		fmt.Fprintln(cmd.OutOrStdout(), r.SummaryLine())
 	}

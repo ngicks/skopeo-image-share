@@ -18,14 +18,21 @@ import (
 	"github.com/pkg/sftp"
 )
 
-// Remote bundles a live SFTP client (talking to an `ssh -s sftp`
-// subprocess) with a force-close goroutine that fires after a
-// 2-second grace period when ctx is cancelled. SSH transport is
-// delegated entirely to the system ssh binary; auth, host-key
+// Remote bundles the remote-side dependencies the push/pull
+// orchestrator consumes: a live SFTP client (talking to an
+// `ssh -s sftp` subprocess), a force-close goroutine that fires after
+// [ForceCloseGrace] when ctx is cancelled, the resolved remote base
+// dir, and the remote skopeo / podman / docker wrappers. SSH transport
+// is delegated entirely to the system ssh binary; auth, host-key
 // verification, ProxyCommand etc. flow through the user's ssh config.
 //
-// Build via [NewRemote]; close with [Remote.Close].
+// Build via [NewRemote]; emit [PullPeerSide] / [PushPeerSide] snapshots
+// via the methods of the same name; close with [Remote.Close].
 type Remote struct {
+	BaseDir   string
+	Transport string
+	OCIPath   string
+
 	target ssh.Target
 	runner *cli.SshRunner
 
@@ -34,16 +41,35 @@ type Remote struct {
 	sftp    *sftp.Client
 	closed  bool
 
-	// cancelWatch is called by Close to stop the force-close goroutine.
 	cancelWatch context.CancelFunc
+
+	skopeoCli *skopeo.Skopeo
+	lister    listInterface
+	fs        FS
 }
 
-// NewRemote spawns `ssh -s sftp` and wires its pipes into a sftp
-// client via [sftp.NewClientPipe], then starts the force-close
-// goroutine.
-func NewRemote(ctx context.Context, target ssh.Target) (*Remote, error) {
+// RemoteConfig configures [NewRemote].
+//
+//   - Target is the SSH destination (required).
+//   - Transport is required: one of [TransportContainersStorage],
+//     [TransportDockerDaemon], or [TransportOCI].
+//   - OCIPath is required when Transport == [TransportOCI].
+type RemoteConfig struct {
+	Target    ssh.Target
+	Transport string
+	OCIPath   string
+}
+
+// NewRemote spawns `ssh -s sftp`, wires its pipes into a sftp client
+// via [sftp.NewClientPipe], starts the force-close goroutine, then
+// resolves BaseDir on the remote and builds the remote skopeo wrapper
+// + a transport-appropriate lister + an FS rooted at BaseDir.
+func NewRemote(ctx context.Context, cfg RemoteConfig) (*Remote, error) {
+	if cfg.Transport == "" {
+		return nil, errors.New("remote: transport unset")
+	}
 	var stderrBuf bytes.Buffer
-	cmd, stdout, stdin, err := ssh.Subsystem(ctx, target, &stderrBuf)
+	cmd, stdout, stdin, err := ssh.Subsystem(ctx, cfg.Target, &stderrBuf)
 	if err != nil {
 		return nil, err
 	}
@@ -61,12 +87,29 @@ func NewRemote(ctx context.Context, target ssh.Target) (*Remote, error) {
 		return nil, fmt.Errorf("sftp: %w", err)
 	}
 	r := &Remote{
-		target:  target,
-		runner:  cli.NewSshRunner(target, ""),
-		sftpCmd: cmd,
-		sftp:    sftpC,
+		Transport: cfg.Transport,
+		OCIPath:   cfg.OCIPath,
+		target:    cfg.Target,
+		runner:    cli.NewSshRunner(cfg.Target, ""),
+		sftpCmd:   cmd,
+		sftp:      sftpC,
 	}
 	r.startWatch(ctx)
+
+	base, err := r.ResolveBaseDir(ctx)
+	if err != nil {
+		_ = r.Close()
+		return nil, fmt.Errorf("remote: resolve base dir: %w", err)
+	}
+	r.BaseDir = base
+	r.fs = sftpfs.New(sftpC, base)
+	r.skopeoCli = skopeo.New(cli.NewSshRunner(cfg.Target, "skopeo"))
+	switch cfg.Transport {
+	case TransportContainersStorage:
+		r.lister = docker.NewPodman(cli.NewSshRunner(cfg.Target, "podman"))
+	case TransportDockerDaemon:
+		r.lister = docker.NewDocker(cli.NewSshRunner(cfg.Target, "docker"))
+	}
 	return r, nil
 }
 
@@ -156,10 +199,11 @@ func (r *Remote) waitCmd() error {
 	}
 }
 
-// SFTPRooted returns an [*sftpfs.SftpFs] rooted at base.
+// SFTPRooted returns an [*sftpfs.SftpFs] rooted at base. For the
+// resolved remote BaseDir, prefer [Remote.FS].
 func (r *Remote) SFTPRooted(base string) *sftpfs.SftpFs { return sftpfs.New(r.sftp, base) }
 
-// SFTPClient returns the underlying *sftp.Client (for advanced use).
+// SFTPClient returns the underlying *sftp.Client.
 func (r *Remote) SFTPClient() *sftp.Client { return r.sftp }
 
 // Run runs argv on the remote by spawning a fresh `ssh ... -- <argv>`
@@ -193,20 +237,33 @@ func (r *Remote) ResolveBaseDir(ctx context.Context) (string, error) {
 	return base, nil
 }
 
-// Skopeo returns a [skopeo.Skopeo] wrapper that runs `skopeo` on
-// the remote.
-func (r *Remote) Skopeo() *skopeo.Skopeo {
-	return skopeo.New(cli.NewSshRunner(r.target, "skopeo"))
+// Skopeo returns the remote skopeo wrapper.
+func (r *Remote) Skopeo() *skopeo.Skopeo { return r.skopeoCli }
+
+// FS returns the remote [FS] rooted at BaseDir.
+func (r *Remote) FS() FS { return r.fs }
+
+// PullPeerSide returns the snapshot consumed by [Pull] as the
+// source-of-truth side.
+func (r *Remote) PullPeerSide() PullPeerSide {
+	return PullPeerSide{
+		Skopeo:    r.skopeoCli,
+		FS:        r.fs,
+		BaseDir:   r.BaseDir,
+		Transport: r.Transport,
+		OCIPath:   r.OCIPath,
+	}
 }
 
-// Podman returns a [docker.Podman] wrapper that runs `podman` on the
-// remote.
-func (r *Remote) Podman() *docker.Podman {
-	return docker.NewPodman(cli.NewSshRunner(r.target, "podman"))
-}
-
-// Docker returns a [docker.Docker] wrapper that runs `docker` on the
-// remote.
-func (r *Remote) Docker() *docker.Docker {
-	return docker.NewDocker(cli.NewSshRunner(r.target, "docker"))
+// PushPeerSide returns the snapshot consumed by [Push] as the peer
+// (destination) side.
+func (r *Remote) PushPeerSide() PushPeerSide {
+	return PushPeerSide{
+		Skopeo:    r.skopeoCli,
+		FS:        r.fs,
+		BaseDir:   r.BaseDir,
+		Transport: r.Transport,
+		OCIPath:   r.OCIPath,
+		Lister:    r.lister,
+	}
 }
