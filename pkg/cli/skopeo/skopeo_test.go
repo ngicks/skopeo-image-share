@@ -109,6 +109,48 @@ func TestSkopeo_CopyFromOCI_Argv(t *testing.T) {
 	}
 }
 
+func TestSkopeo_CompressionArgs(t *testing.T) {
+	t.Parallel()
+	r := &stubRunner{}
+	s := New(r)
+	s.CompressionFormat = "zstd"
+	s.CompressionLevel = 19
+	s.ForceCompression = true
+	if err := s.CopyToOCI(context.Background(),
+		"containers-storage", "ghcr.io/a/b:c",
+		"/tmp/oci/_tags/c", "/tmp/share"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CopyFromOCI(context.Background(),
+		"/tmp/oci/_tags/c", "/tmp/share",
+		"containers-storage", "ghcr.io/a/b:c"); err != nil {
+		t.Fatal(err)
+	}
+	want := [][]string{
+		{
+			"copy", "--preserve-digests",
+			"--compression-format", "zstd",
+			"--compression-level", "19",
+			"--force-compression",
+			"--dest-shared-blob-dir", "/tmp/share",
+			"containers-storage:ghcr.io/a/b:c",
+			"oci:/tmp/oci/_tags/c",
+		},
+		{
+			"copy", "--preserve-digests",
+			"--compression-format", "zstd",
+			"--compression-level", "19",
+			"--force-compression",
+			"--src-shared-blob-dir", "/tmp/share",
+			"oci:/tmp/oci/_tags/c",
+			"containers-storage:ghcr.io/a/b:c",
+		},
+	}
+	if !reflect.DeepEqual(r.got, want) {
+		t.Errorf("argv mismatch:\n got: %v\nwant: %v", r.got, want)
+	}
+}
+
 func TestSkopeo_PropagatesRunnerError(t *testing.T) {
 	t.Parallel()
 	want := errors.New("simulated runner error")
