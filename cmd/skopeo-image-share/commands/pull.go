@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ngicks/skopeo-image-share/pkg/cli/ssh"
 	"github.com/ngicks/skopeo-image-share/pkg/skopeoimageshare"
 	"github.com/spf13/cobra"
 )
@@ -59,56 +58,31 @@ func runPull(cmd *cobra.Command, args []string) error {
 	images := append([]string(nil), pullFlags.images...)
 	images = append(images, args...)
 
-	if err := validateRemoteTarget(remoteTarget); err != nil {
-		return err
-	}
-
-	local, err := skopeoimageshare.NewLocal(ctx, skopeoimageshare.LocalConfig{
-		BaseDir:   pullFlags.dataDir,
-		Transport: pullFlags.localTransport,
-		OCIPath:   pullFlags.localPath,
-	})
+	share, err := initShare(ctx,
+		skopeoimageshare.LocalConfig{
+			BaseDir:   pullFlags.dataDir,
+			Transport: pullFlags.localTransport,
+			OCIPath:   pullFlags.localPath,
+		},
+		skopeoimageshare.RemoteConfig{
+			Transport: pullFlags.remoteTransport,
+			OCIPath:   pullFlags.remotePath,
+		},
+	)
 	if err != nil {
 		return err
 	}
+	defer share.Close()
 
-	if err := ssh.Probe(ctx, remoteTarget); err != nil {
-		return fmt.Errorf("ssh probe: %w", err)
-	}
-
-	remote, err := skopeoimageshare.NewRemote(ctx, skopeoimageshare.RemoteConfig{
-		Target:    remoteTarget,
-		Transport: pullFlags.remoteTransport,
-		OCIPath:   pullFlags.remotePath,
+	res, err := share.Pull(ctx, skopeoimageshare.PullArgs{
+		Images:         images,
+		Jobs:           pullFlags.jobs,
+		DryRun:         pullFlags.dryRun,
+		AssumeLocalHas: pullFlags.assumeLocalHas,
+		KeepGoing:      pullFlags.keepGoing,
+		Retries:        pullFlags.retries,
+		RetryMaxDelay:  pullFlags.retryMaxDelay,
 	})
-	if err != nil {
-		return err
-	}
-	defer remote.Close()
-
-	if _, err := local.Skopeo().Version(ctx); err != nil {
-		return fmt.Errorf("local skopeo: %w", err)
-	}
-	if _, err := remote.Skopeo().Version(ctx); err != nil {
-		return fmt.Errorf("remote skopeo: %w", err)
-	}
-
-	pa := skopeoimageshare.PullArgs{
-		Images:          images,
-		LocalTransport:  pullFlags.localTransport,
-		LocalPath:       pullFlags.localPath,
-		RemoteTransport: pullFlags.remoteTransport,
-		RemotePath:      pullFlags.remotePath,
-		DataDir:         local.BaseDir,
-		Jobs:            pullFlags.jobs,
-		DryRun:          pullFlags.dryRun,
-		AssumeLocalHas:  pullFlags.assumeLocalHas,
-		KeepGoing:       pullFlags.keepGoing,
-		Retries:         pullFlags.retries,
-		RetryMaxDelay:   pullFlags.retryMaxDelay,
-	}
-
-	res, err := skopeoimageshare.Pull(ctx, pa, local.PullSide(), remote.PullPeerSide())
 	for _, r := range res.Reports {
 		fmt.Fprintln(cmd.OutOrStdout(), r.SummaryLine())
 	}

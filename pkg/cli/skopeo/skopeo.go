@@ -5,6 +5,7 @@ package skopeo
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 
@@ -65,14 +66,25 @@ func (s *Skopeo) InspectRawShared(ctx context.Context, ociDir, sharedBlobDir str
 //	skopeo copy --preserve-digests \
 //	    [compression flags] \
 //	    --dest-shared-blob-dir <sharedBlobDir> \
-//	    <srcTransport>:<srcRef> oci:<ociDir>
-func (s *Skopeo) CopyToOCI(ctx context.Context, srcTransport, srcRef, ociDir, sharedBlobDir string) error {
+//	    <srcTransport>:<srcRef> oci:<ociDir>:<imageRef>
+//
+// imageRef is the index reference name written into the OCI layout's
+// index.json (`org.opencontainers.image.ref.name`); it must match the
+// imageRef passed later to [Skopeo.CopyFromOCI] for the same dir.
+// ociDir and imageRef are required.
+func (s *Skopeo) CopyToOCI(ctx context.Context, srcTransport, srcRef, ociDir, imageRef, sharedBlobDir string) error {
+	if ociDir == "" {
+		return errors.New("skopeo: empty ociDir")
+	}
+	if imageRef == "" {
+		return errors.New("skopeo: empty imageRef")
+	}
 	argv := []string{"copy", "--preserve-digests"}
 	argv = append(argv, s.compressionArgs()...)
 	argv = append(argv,
 		"--dest-shared-blob-dir", sharedBlobDir,
 		srcTransport+":"+srcRef,
-		"oci:"+ociDir,
+		"oci:"+ociDir+":"+imageRef,
 	)
 	_, err := s.Runner.Run(ctx, argv)
 	return err
@@ -83,13 +95,23 @@ func (s *Skopeo) CopyToOCI(ctx context.Context, srcTransport, srcRef, ociDir, sh
 //	skopeo copy --preserve-digests \
 //	    [compression flags] \
 //	    --src-shared-blob-dir <sharedBlobDir> \
-//	    oci:<ociDir> <dstTransport>:<dstRef>
-func (s *Skopeo) CopyFromOCI(ctx context.Context, ociDir, sharedBlobDir, dstTransport, dstRef string) error {
+//	    oci:<ociDir>:<imageRef> <dstTransport>:<dstRef>
+//
+// imageRef selects which manifest to read from the OCI index; it must
+// match the imageRef used by the [Skopeo.CopyToOCI] that wrote it.
+// ociDir and imageRef are required.
+func (s *Skopeo) CopyFromOCI(ctx context.Context, ociDir, imageRef, sharedBlobDir, dstTransport, dstRef string) error {
+	if ociDir == "" {
+		return errors.New("skopeo: empty ociDir")
+	}
+	if imageRef == "" {
+		return errors.New("skopeo: empty imageRef")
+	}
 	argv := []string{"copy", "--preserve-digests"}
 	argv = append(argv, s.compressionArgs()...)
 	argv = append(argv,
 		"--src-shared-blob-dir", sharedBlobDir,
-		"oci:"+ociDir,
+		"oci:"+ociDir+":"+imageRef,
 		dstTransport+":"+dstRef,
 	)
 	_, err := s.Runner.Run(ctx, argv)

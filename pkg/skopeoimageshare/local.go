@@ -4,26 +4,31 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/ngicks/skopeo-image-share/pkg/cli"
 	"github.com/ngicks/skopeo-image-share/pkg/cli/docker"
 	"github.com/ngicks/skopeo-image-share/pkg/cli/skopeo"
+	"github.com/ngicks/skopeo-image-share/pkg/imageref"
 )
 
-// Local bundles the local-side dependencies the push/pull orchestrator
-// consumes. It owns the resolved base data dir, the local skopeo /
-// podman / docker wrappers, and an [FS] rooted at BaseDir. Build via
-// [NewLocal]; emit [PullSide] / [PushSide] snapshots via the methods of
-// the same name. The struct itself owns no goroutines or descriptors
-// and does not require Close.
+// Local is the local-side push/pull endpoint. It owns the resolved
+// base data dir, the local skopeo / podman / docker wrappers, and an
+// [FS] rooted at BaseDir. Build via [NewLocal].
+//
+// [Local.Push] and [Local.Pull] drive a transfer against any [Remote]
+// (typically the SSH-backed implementation from [NewRemote]).
 type Local struct {
-	BaseDir   string
-	Transport string
-	OCIPath   string
+	baseDir   string
+	transport string
+	ociPath   string
 
-	skopeoCli *skopeo.Skopeo
-	lister    listInterface
+	skopeoCli SkopeoLike
+	lister    Lister
 	fs        FS
+
+	validateOnce sync.Once
+	validateErr  error
 }
 
 // LocalConfig configures [NewLocal].
@@ -62,9 +67,9 @@ func NewLocal(ctx context.Context, cfg LocalConfig) (*Local, error) {
 		return nil, err
 	}
 	l := &Local{
-		BaseDir:   base,
-		Transport: cfg.Transport,
-		OCIPath:   cfg.OCIPath,
+		baseDir:   base,
+		transport: cfg.Transport,
+		ociPath:   cfg.OCIPath,
 		skopeoCli: skopeo.New(cli.NewLocalRunner("skopeo")),
 		fs:        fs,
 	}
@@ -77,18 +82,48 @@ func NewLocal(ctx context.Context, cfg LocalConfig) (*Local, error) {
 	return l, nil
 }
 
+// BaseDir returns the resolved local data dir.
+func (l *Local) BaseDir() string { return l.baseDir }
+
+// Transport returns the canonical local transport.
+func (l *Local) Transport() string { return l.transport }
+
+// OCIPath returns the configured `oci:<dir>` path (only meaningful
+// when Transport == [TransportOCI]).
+func (l *Local) OCIPath() string { return l.ociPath }
+
 // Skopeo returns the local skopeo wrapper.
-func (l *Local) Skopeo() *skopeo.Skopeo { return l.skopeoCli }
+func (l *Local) Skopeo() SkopeoLike { return l.skopeoCli }
 
 // FS returns the local [FS] rooted at BaseDir.
 func (l *Local) FS() FS { return l.fs }
+
+// Lister returns the local docker / podman wrapper, or nil for
+// [TransportOCI].
+func (l *Local) Lister() Lister { return l.lister }
+
+// Validate runs sanity checks against the local environment — at the
+// moment, that the local skopeo binary is present and runnable.
+// Cached after the first invocation; safe to call from every entry
+// point.
+func (l *Local) Validate(ctx context.Context) error {
+	l.validateOnce.Do(func() {
+		if _, err := l.skopeoCli.Version(ctx); err != nil {
+			l.validateErr = fmt.Errorf("local skopeo: %w", err)
+		}
+	})
+	return l.validateErr
+}
 
 // Dump runs `skopeo copy <Transport>:<ref> oci:<store-tag-dir>`,
 // staging ref into the local store layout (per-tag dump dir + the
 // shared blob pool under BaseDir/share). Returns the absolute tag
 // directory.
-func (l *Local) Dump(ctx context.Context, ref ImageRef) (string, error) {
-	store := NewStore(l.BaseDir)
+func (l *Local) Dump(ctx context.Context, ref imageref.ImageRef) (string, error) {
+	if err := l.Validate(ctx); err != nil {
+		return "", err
+	}
+	store := NewStore(l.baseDir)
 	tagDirAbs, err := store.DumpDir(ref)
 	if err != nil {
 		return "", err
@@ -100,31 +135,14 @@ func (l *Local) Dump(ctx context.Context, ref ImageRef) (string, error) {
 	if err := l.fs.MkdirAll(tagDirRel, 0o755); err != nil {
 		return "", fmt.Errorf("dump: mkdir %s: %w", tagDirRel, err)
 	}
-	if err := l.skopeoCli.CopyToOCI(ctx, l.Transport, ref.String(), tagDirAbs, store.ShareDir()); err != nil {
+	if err := l.skopeoCli.CopyToOCI(ctx, l.transport, ref.String(), tagDirAbs, ref.String(), store.ShareDir()); err != nil {
 		return "", fmt.Errorf("dump: skopeo copy: %w", err)
 	}
 	return tagDirAbs, nil
 }
 
-// PullSide returns the snapshot consumed by [Pull].
-func (l *Local) PullSide() PullSide {
-	return PullSide{
-		Skopeo:    l.skopeoCli,
-		FS:        l.fs,
-		BaseDir:   l.BaseDir,
-		Transport: l.Transport,
-		OCIPath:   l.OCIPath,
-		Lister:    l.lister,
-	}
-}
-
-// PushSide returns the snapshot consumed by [Push].
-func (l *Local) PushSide() PushSide {
-	return PushSide{
-		Skopeo:    l.skopeoCli,
-		FS:        l.fs,
-		BaseDir:   l.BaseDir,
-		Transport: l.Transport,
-		OCIPath:   l.OCIPath,
-	}
+// List returns the digest set of every blob reachable from this
+// local's images, plus the share/ inventory.
+func (l *Local) List(ctx context.Context) (DigestSet, error) {
+	return listAt(ctx, l.transport, l.skopeoCli, l.fs, l.baseDir, l.lister)
 }

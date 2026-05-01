@@ -1,4 +1,10 @@
-package skopeoimageshare
+// Package imageref parses and canonicalizes OCI / Docker image
+// references of the form `[host[:port]/]<repo-path>[:tag|@digest]`.
+//
+// The package is intentionally small and standalone — it has no
+// dependency on the rest of skopeo-image-share so it can be reused by
+// other tooling.
+package imageref
 
 import (
 	"errors"
@@ -55,10 +61,10 @@ func (r ImageRef) String() string {
 	return r.Host + "/" + r.Path + ":" + r.Tag
 }
 
-// ParseImageRef parses s into an ImageRef, applying Docker Hub
+// Parse parses s into an [ImageRef], applying Docker Hub
 // canonicalization and rejecting refs whose path contains a reserved
 // segment.
-func ParseImageRef(s string) (ImageRef, error) {
+func Parse(s string) (ImageRef, error) {
 	if s == "" {
 		return ImageRef{}, errors.New("imageref: empty reference")
 	}

@@ -1,11 +1,11 @@
-package skopeoimageshare
+package imageref
 
 import (
 	"strings"
 	"testing"
 )
 
-func TestParseImageRef(t *testing.T) {
+func TestParse(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
@@ -101,9 +101,9 @@ func TestParseImageRef(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := ParseImageRef(tc.in)
+			got, err := Parse(tc.in)
 			if err != nil {
-				t.Fatalf("ParseImageRef(%q) unexpected error: %v", tc.in, err)
+				t.Fatalf("Parse(%q) unexpected error: %v", tc.in, err)
 			}
 			if got.Host != tc.wantHost {
 				t.Errorf("Host: got %q, want %q", got.Host, tc.wantHost)
@@ -127,7 +127,7 @@ func TestParseImageRef(t *testing.T) {
 	}
 }
 
-func TestParseImageRef_Errors(t *testing.T) {
+func TestParse_Errors(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
@@ -145,12 +145,12 @@ func TestParseImageRef_Errors(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := ParseImageRef(tc.in)
+			_, err := Parse(tc.in)
 			if err == nil {
-				t.Fatalf("ParseImageRef(%q) expected error containing %q, got nil", tc.in, tc.want)
+				t.Fatalf("Parse(%q) expected error containing %q, got nil", tc.in, tc.want)
 			}
 			if !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("ParseImageRef(%q) error = %v, want substring %q", tc.in, err, tc.want)
+				t.Fatalf("Parse(%q) error = %v, want substring %q", tc.in, err, tc.want)
 			}
 		})
 	}

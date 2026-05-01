@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/ngicks/skopeo-image-share/pkg/imageref"
 )
 
 // recordingSkopeo is a fake [SkopeoLike] that records calls and lets
@@ -15,8 +17,8 @@ import (
 type recordingSkopeo struct {
 	versionRet  string
 	inspectRaw  map[string][]byte
-	copyToOCI   func(ctx context.Context, srcTransport, srcRef, ociDir, sharedBlobDir string) error
-	copyFromOCI func(ctx context.Context, ociDir, sharedBlobDir, dstTransport, dstRef string) error
+	copyToOCI   func(ctx context.Context, srcTransport, srcRef, ociDir, imageRef, sharedBlobDir string) error
+	copyFromOCI func(ctx context.Context, ociDir, imageRef, sharedBlobDir, dstTransport, dstRef string) error
 
 	inspectCount  atomic.Int32
 	copyToCount   atomic.Int32
@@ -36,19 +38,55 @@ func (s *recordingSkopeo) InspectRaw(ctx context.Context, transport, ref string)
 	}
 	return nil, errors.New("no inspect fixture")
 }
-func (s *recordingSkopeo) CopyToOCI(ctx context.Context, srcTransport, srcRef, ociDir, sharedBlobDir string) error {
+func (s *recordingSkopeo) CopyToOCI(ctx context.Context, srcTransport, srcRef, ociDir, imageRef, sharedBlobDir string) error {
 	s.copyToCount.Add(1)
 	if s.copyToOCI != nil {
-		return s.copyToOCI(ctx, srcTransport, srcRef, ociDir, sharedBlobDir)
+		return s.copyToOCI(ctx, srcTransport, srcRef, ociDir, imageRef, sharedBlobDir)
 	}
 	return nil
 }
-func (s *recordingSkopeo) CopyFromOCI(ctx context.Context, ociDir, sharedBlobDir, dstTransport, dstRef string) error {
+func (s *recordingSkopeo) CopyFromOCI(ctx context.Context, ociDir, imageRef, sharedBlobDir, dstTransport, dstRef string) error {
 	s.copyFromCount.Add(1)
 	if s.copyFromOCI != nil {
-		return s.copyFromOCI(ctx, ociDir, sharedBlobDir, dstTransport, dstRef)
+		return s.copyFromOCI(ctx, ociDir, imageRef, sharedBlobDir, dstTransport, dstRef)
 	}
 	return nil
+}
+
+// fakeRemote is an in-memory [Remote] used by orchestrator tests. It
+// owns its own FS, skopeo fake and (optional) lister, and the read-only
+// flag.
+type fakeRemote struct {
+	baseDir   string
+	transport string
+	ociPath   string
+	readOnly  bool
+	skopeoCli SkopeoLike
+	lister    Lister
+	fs        FS
+	assumeHas DigestSet
+}
+
+func (f *fakeRemote) Close() error                          { return nil }
+func (f *fakeRemote) BaseDir() string                       { return f.baseDir }
+func (f *fakeRemote) Transport() string                     { return f.transport }
+func (f *fakeRemote) OCIPath() string                       { return f.ociPath }
+func (f *fakeRemote) Skopeo() SkopeoLike                    { return f.skopeoCli }
+func (f *fakeRemote) FS() FS                                { return f.fs }
+func (f *fakeRemote) Lister() Lister                        { return f.lister }
+func (f *fakeRemote) ReadOnly() bool                        { return f.readOnly }
+func (f *fakeRemote) Validate(ctx context.Context) error    { return nil }
+func (f *fakeRemote) Dump(ctx context.Context, ref imageref.ImageRef) (string, error) {
+	if f.readOnly {
+		return "", errors.New("remote: read-only")
+	}
+	return dumpRemote(ctx, f.transport, f.baseDir, f.skopeoCli, f.fs, ref)
+}
+func (f *fakeRemote) List(ctx context.Context) (DigestSet, error) {
+	if f.assumeHas != nil {
+		return f.assumeHas, nil
+	}
+	return listAt(ctx, f.transport, f.skopeoCli, f.fs, f.baseDir, f.lister)
 }
 
 // newSides constructs local + remote FSes (both osfs.NewUnrooted
@@ -87,6 +125,15 @@ func seedDump(t *testing.T, tagDir, shareDir string) (manifestDigest string) {
 	return manifestDigest
 }
 
+func newLocal(localFS FS, base string, sk SkopeoLike) *Local {
+	return &Local{
+		baseDir:   base,
+		transport: TransportContainersStorage,
+		skopeoCli: sk,
+		fs:        localFS,
+	}
+}
+
 func TestPush_HappyPath_Sends_Then_Loads(t *testing.T) {
 	t.Parallel()
 	localFS, remoteFS, localBase, remoteBase := newSides(t)
@@ -96,29 +143,25 @@ func TestPush_HappyPath_Sends_Then_Loads(t *testing.T) {
 	seedDump(t, tagDir, shareDir)
 
 	localSk := &recordingSkopeo{
-		copyToOCI: func(ctx context.Context, srcTransport, srcRef, ociDir, sharedBlobDir string) error {
+		copyToOCI: func(ctx context.Context, srcTransport, srcRef, ociDir, imageRef, sharedBlobDir string) error {
 			return nil
 		},
 	}
 	remoteSk := &recordingSkopeo{}
 
-	res, err := Push(
-		context.Background(),
-		PushArgs{
-			Images:          []string{"ghcr.io/a/b:v1"},
-			LocalTransport:  TransportContainersStorage,
-			RemoteTransport: TransportContainersStorage,
-			Jobs:            2,
-		},
-		PushSide{Skopeo: localSk, FS: localFS, BaseDir: localBase, Transport: TransportContainersStorage},
-		PushPeerSide{
-			Skopeo:    remoteSk,
-			FS:        remoteFS,
-			BaseDir:   remoteBase,
-			Transport: TransportContainersStorage,
-			AssumeHas: NewDigestSet(),
-		},
-	)
+	local := newLocal(localFS, localBase, localSk)
+	remote := &fakeRemote{
+		baseDir:   remoteBase,
+		transport: TransportContainersStorage,
+		skopeoCli: remoteSk,
+		fs:        remoteFS,
+		assumeHas: NewDigestSet(),
+	}
+
+	res, err := local.Push(context.Background(), PushArgs{
+		Images: []string{"ghcr.io/a/b:v1"},
+		Jobs:   2,
+	}, remote)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,11 +201,19 @@ func TestPush_ReusesRemoteHas(t *testing.T) {
 		"sha256:"+strings.Repeat("b", 64),
 	)
 
-	res, err := Push(context.Background(),
-		PushArgs{Images: []string{"ghcr.io/a/b:v1"}, LocalTransport: TransportContainersStorage, RemoteTransport: TransportContainersStorage},
-		PushSide{Skopeo: &recordingSkopeo{}, FS: localFS, BaseDir: localBase, Transport: TransportContainersStorage},
-		PushPeerSide{Skopeo: &recordingSkopeo{}, FS: remoteFS, BaseDir: remoteBase, Transport: TransportContainersStorage, AssumeHas: remoteHas},
-	)
+	local := newLocal(localFS, localBase, &recordingSkopeo{})
+	remote := &fakeRemote{
+		baseDir:   remoteBase,
+		transport: TransportContainersStorage,
+		skopeoCli: &recordingSkopeo{},
+		fs:        remoteFS,
+		assumeHas: remoteHas,
+	}
+
+	res, err := local.Push(context.Background(), PushArgs{
+		Images:             []string{"ghcr.io/a/b:v1"},
+		AssumeRemoteHasSet: remoteHas,
+	}, remote)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,22 +240,19 @@ func TestPush_DryRun_NoMutationsAnywhere(t *testing.T) {
 	beforeLocal := snapshotDir(t, localBase)
 	beforeRemote := snapshotDir(t, remoteBase)
 
-	res, err := Push(context.Background(),
-		PushArgs{
-			Images:          []string{"ghcr.io/a/b:v1"},
-			LocalTransport:  TransportContainersStorage,
-			RemoteTransport: TransportContainersStorage,
-			DryRun:          true,
-		},
-		PushSide{Skopeo: localSk, FS: localFS, BaseDir: localBase, Transport: TransportContainersStorage},
-		PushPeerSide{
-			Skopeo:    remoteSk,
-			FS:        remoteFS,
-			BaseDir:   remoteBase,
-			Transport: TransportContainersStorage,
-			AssumeHas: NewDigestSet(),
-		},
-	)
+	local := newLocal(localFS, localBase, localSk)
+	remote := &fakeRemote{
+		baseDir:   remoteBase,
+		transport: TransportContainersStorage,
+		skopeoCli: remoteSk,
+		fs:        remoteFS,
+		assumeHas: NewDigestSet(),
+	}
+
+	res, err := local.Push(context.Background(), PushArgs{
+		Images: []string{"ghcr.io/a/b:v1"},
+		DryRun: true,
+	}, remote)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +293,7 @@ func TestPush_KeepGoing_AccumulatesErrors(t *testing.T) {
 	seedDump(t, tagDir, shareDir)
 
 	localSk := &recordingSkopeo{
-		copyToOCI: func(ctx context.Context, srcTransport, srcRef, ociDir, sharedBlobDir string) error {
+		copyToOCI: func(ctx context.Context, srcTransport, srcRef, ociDir, imageRef, sharedBlobDir string) error {
 			if strings.Contains(srcRef, "fail") {
 				return errors.New("simulated failure")
 			}
@@ -253,17 +301,19 @@ func TestPush_KeepGoing_AccumulatesErrors(t *testing.T) {
 		},
 	}
 
-	res, err := Push(
-		context.Background(),
-		PushArgs{
-			Images:          []string{"ghcr.io/a/ok:v1", "ghcr.io/a/fail:v1"},
-			LocalTransport:  TransportContainersStorage,
-			RemoteTransport: TransportContainersStorage,
-			KeepGoing:       true,
-		},
-		PushSide{Skopeo: localSk, FS: localFS, BaseDir: localBase, Transport: TransportContainersStorage},
-		PushPeerSide{Skopeo: &recordingSkopeo{}, FS: remoteFS, BaseDir: remoteBase, Transport: TransportContainersStorage, AssumeHas: NewDigestSet()},
-	)
+	local := newLocal(localFS, localBase, localSk)
+	remote := &fakeRemote{
+		baseDir:   remoteBase,
+		transport: TransportContainersStorage,
+		skopeoCli: &recordingSkopeo{},
+		fs:        remoteFS,
+		assumeHas: NewDigestSet(),
+	}
+
+	res, err := local.Push(context.Background(), PushArgs{
+		Images:    []string{"ghcr.io/a/ok:v1", "ghcr.io/a/fail:v1"},
+		KeepGoing: true,
+	}, remote)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,29 +335,54 @@ func TestPush_AssumeRemoteHasFromRawStrings_NoEnumeration(t *testing.T) {
 
 	peerSk := &recordingSkopeo{} // InspectRaw fails by default
 
-	_, err := Push(
-		context.Background(),
-		PushArgs{
-			Images:          []string{"ghcr.io/a/b:v1"},
-			LocalTransport:  TransportContainersStorage,
-			RemoteTransport: TransportContainersStorage,
-			AssumeRemoteHas: []string{"sha256:" + strings.Repeat("9", 64)},
-		},
-		PushSide{Skopeo: &recordingSkopeo{}, FS: localFS, BaseDir: localBase, Transport: TransportContainersStorage},
-		PushPeerSide{
-			Skopeo:    peerSk,
-			FS:        remoteFS,
-			BaseDir:   remoteBase,
-			Transport: TransportContainersStorage,
-			Lister:    &fakeLister{refs: nil},
-		},
-	)
+	local := newLocal(localFS, localBase, &recordingSkopeo{})
+	remote := &fakeRemote{
+		baseDir:   remoteBase,
+		transport: TransportContainersStorage,
+		skopeoCli: peerSk,
+		fs:        remoteFS,
+		lister:    &fakeLister{refs: nil},
+	}
+
+	_, err := local.Push(context.Background(), PushArgs{
+		Images:          []string{"ghcr.io/a/b:v1"},
+		AssumeRemoteHas: []string{"sha256:" + strings.Repeat("9", 64)},
+	}, remote)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if peerSk.inspectCount.Load() != 0 {
 		t.Errorf("peer skopeo InspectRaw called %d times, want 0 (--assume-remote-has should skip enumeration)",
 			peerSk.inspectCount.Load())
+	}
+}
+
+func TestPush_RejectsReadOnlyRemote(t *testing.T) {
+	t.Parallel()
+	localFS, remoteFS, localBase, remoteBase := newSides(t)
+
+	tagDir := filepath.Join(localBase, "ghcr.io", "a", "b", "_tags", "v1")
+	shareDir := filepath.Join(localBase, "share")
+	seedDump(t, tagDir, shareDir)
+
+	local := newLocal(localFS, localBase, &recordingSkopeo{})
+	remote := &fakeRemote{
+		baseDir:   remoteBase,
+		transport: TransportContainersStorage,
+		skopeoCli: &recordingSkopeo{},
+		fs:        remoteFS,
+		readOnly:  true,
+		assumeHas: NewDigestSet(),
+	}
+
+	_, err := local.Push(context.Background(), PushArgs{
+		Images: []string{"ghcr.io/a/b:v1"},
+	}, remote)
+	if err == nil {
+		t.Fatal("expected error for read-only peer, got nil")
+	}
+	if !strings.Contains(err.Error(), "read-only") {
+		t.Errorf("error %v does not mention read-only", err)
 	}
 }
 

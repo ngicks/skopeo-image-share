@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ngicks/skopeo-image-share/pkg/ocidir"
 )
 
 // fakeSkopeoInspector returns canned manifest bytes per (transport, ref).
@@ -59,7 +61,7 @@ func TestEnumerate_ContainersStorage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manDigest := DigestBytes([]byte(ociManifestFixture))
+	manDigest := ocidir.DigestBytes([]byte(ociManifestFixture))
 	wants := []string{
 		manDigest,
 		"sha256:" + strings.Repeat("1", 64),
@@ -171,14 +173,6 @@ func TestEnumerate_OCI_MissingBaseDir_NoError(t *testing.T) {
 	}
 }
 
-func TestDigestBytes(t *testing.T) {
-	t.Parallel()
-	got := DigestBytes([]byte(""))
-	want := "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-	if got != want {
-		t.Errorf("DigestBytes(\"\") = %q, want %q", got, want)
-	}
-}
 
 func must(t *testing.T, err error) {
 	t.Helper()

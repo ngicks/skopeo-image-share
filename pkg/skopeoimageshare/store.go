@@ -7,6 +7,9 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+
+	"github.com/ngicks/skopeo-image-share/pkg/imageref"
+	"github.com/ngicks/skopeo-image-share/pkg/ocidir"
 )
 
 // AppDirName is the per-user data subdirectory under XDG_DATA_HOME.
@@ -52,7 +55,7 @@ func (s *Store) LogDir() string { return filepath.Join(s.Base, "log") }
 
 // TagDir returns the tag-pinned dump directory for r. If r is not
 // tag-pinned, it returns "".
-func (s *Store) TagDir(r ImageRef) string {
+func (s *Store) TagDir(r imageref.ImageRef) string {
 	if !r.IsTagged() {
 		return ""
 	}
@@ -61,7 +64,7 @@ func (s *Store) TagDir(r ImageRef) string {
 
 // DigestDir returns the digest-pinned dump directory for r. If r is not
 // digest-pinned, it returns "".
-func (s *Store) DigestDir(r ImageRef) string {
+func (s *Store) DigestDir(r imageref.ImageRef) string {
 	if !r.IsDigested() {
 		return ""
 	}
@@ -69,7 +72,7 @@ func (s *Store) DigestDir(r ImageRef) string {
 }
 
 // DumpDir returns whichever of TagDir / DigestDir is non-empty for r.
-func (s *Store) DumpDir(r ImageRef) (string, error) {
+func (s *Store) DumpDir(r imageref.ImageRef) (string, error) {
 	switch {
 	case r.IsTagged():
 		return s.TagDir(r), nil
@@ -90,23 +93,6 @@ func (s *Store) EnsureLayout(ctx context.Context) error {
 	return nil
 }
 
-// PosixPath joins base with the components of the per-image dump path
-// using forward slashes — suitable for SFTP. host and repoPath are not
-// normalized; pass them as they appear in [ImageRef].
-func PosixTagPath(base, host, repoPath, tag string) string {
-	return path.Join(base, host, repoPath, "_tags", tag)
-}
-
-// PosixDigestPath is the slash-form analogue of [Store.DigestDir].
-func PosixDigestPath(base, host, repoPath, digestHex string) string {
-	return path.Join(base, host, repoPath, "_digests", digestHex)
-}
-
-// PosixSharePath is the slash-form share dir for SFTP.
-func PosixSharePath(base string) string {
-	return path.Join(base, "share")
-}
-
 // RelTagPath is the slash-form tag path **relative** to the base
 // dir, suitable as input to a [vroot.Fs] rooted at the base.
 func RelTagPath(host, repoPath, tag string) string {
@@ -123,7 +109,7 @@ func RelSharePath() string { return "share" }
 
 // RelDumpDir returns the relative-form dump dir for r (TagDir or
 // DigestDir without the base prefix).
-func RelDumpDir(r ImageRef) (string, error) {
+func RelDumpDir(r imageref.ImageRef) (string, error) {
 	switch {
 	case r.IsTagged():
 		return RelTagPath(r.Host, r.Path, r.Tag), nil
@@ -137,7 +123,7 @@ func RelDumpDir(r ImageRef) (string, error) {
 // RelBlobPath returns the share-relative path for digest:
 // "share/<algo>/<hex>".
 func RelBlobPath(digest string) (string, error) {
-	algo, hex, err := SplitDigest(digest)
+	algo, hex, err := ocidir.SplitDigest(digest)
 	if err != nil {
 		return "", err
 	}

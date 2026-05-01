@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ngicks/skopeo-image-share/pkg/imageref"
 )
 
 func TestStorePaths(t *testing.T) {
@@ -13,7 +15,7 @@ func TestStorePaths(t *testing.T) {
 	base := "/tmp/x"
 	st := NewStore(base)
 
-	tagged, err := ParseImageRef("ghcr.io/a/b/c:d")
+	tagged, err := imageref.Parse("ghcr.io/a/b/c:d")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,7 +26,7 @@ func TestStorePaths(t *testing.T) {
 		t.Errorf("DigestDir on tagged ref: got %q, want empty", got)
 	}
 
-	digested, err := ParseImageRef("ghcr.io/x/y@sha256:" + strings.Repeat("0", 64))
+	digested, err := imageref.Parse("ghcr.io/x/y@sha256:" + strings.Repeat("0", 64))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,12 +53,12 @@ func TestStoreDumpDir(t *testing.T) {
 	t.Parallel()
 	st := NewStore("/b")
 
-	tagged, _ := ParseImageRef("nginx:latest")
+	tagged, _ := imageref.Parse("nginx:latest")
 	if d, err := st.DumpDir(tagged); err != nil || !strings.Contains(d, "_tags") {
 		t.Errorf("tagged DumpDir = %q, %v", d, err)
 	}
 
-	digested, _ := ParseImageRef("nginx@sha256:" + strings.Repeat("a", 64))
+	digested, _ := imageref.Parse("nginx@sha256:" + strings.Repeat("a", 64))
 	if d, err := st.DumpDir(digested); err != nil || !strings.Contains(d, "_digests") {
 		t.Errorf("digested DumpDir = %q, %v", d, err)
 	}
@@ -100,17 +102,3 @@ func TestDefaultBaseDir(t *testing.T) {
 	}
 }
 
-func TestPosixPaths(t *testing.T) {
-	t.Parallel()
-	got := PosixTagPath("/r", "ghcr.io", "a/b/c", "d")
-	if want := "/r/ghcr.io/a/b/c/_tags/d"; got != want {
-		t.Errorf("PosixTagPath: got %q, want %q", got, want)
-	}
-	got = PosixDigestPath("/r", "ghcr.io", "x", strings.Repeat("a", 64))
-	if want := "/r/ghcr.io/x/_digests/" + strings.Repeat("a", 64); got != want {
-		t.Errorf("PosixDigestPath: got %q, want %q", got, want)
-	}
-	if got, want := PosixSharePath("/r"), "/r/share"; got != want {
-		t.Errorf("PosixSharePath: got %q, want %q", got, want)
-	}
-}

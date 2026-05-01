@@ -3,6 +3,7 @@ package commands
 import (
 	"fmt"
 
+	"github.com/ngicks/skopeo-image-share/pkg/imageref"
 	"github.com/ngicks/skopeo-image-share/pkg/skopeoimageshare"
 	"github.com/spf13/cobra"
 )
@@ -48,13 +49,10 @@ func runDump(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := local.Skopeo().Version(ctx); err != nil {
-		return fmt.Errorf("local skopeo: %w", err)
-	}
 
 	var failed int
 	for _, raw := range images {
-		ref, err := skopeoimageshare.ParseImageRef(raw)
+		ref, err := imageref.Parse(raw)
 		if err != nil {
 			fmt.Fprintf(cmd.OutOrStdout(), "%s ERROR: %v\n", raw, err)
 			failed++

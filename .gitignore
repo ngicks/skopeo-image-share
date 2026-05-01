@@ -36,3 +36,6 @@ go.work.sum
 /.claude
 # APM dependencies
 apm_modules/
+
+
+/pkg/ocidir/testdata/

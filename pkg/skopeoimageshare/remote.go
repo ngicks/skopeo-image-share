@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -14,38 +15,60 @@ import (
 	"github.com/ngicks/skopeo-image-share/pkg/cli/docker"
 	"github.com/ngicks/skopeo-image-share/pkg/cli/skopeo"
 	"github.com/ngicks/skopeo-image-share/pkg/cli/ssh"
+	"github.com/ngicks/skopeo-image-share/pkg/imageref"
 	"github.com/ngicks/skopeo-image-share/pkg/sftpfs"
 	"github.com/pkg/sftp"
 )
 
-// Remote bundles the remote-side dependencies the push/pull
-// orchestrator consumes: a live SFTP client (talking to an
-// `ssh -s sftp` subprocess), a force-close goroutine that fires after
-// [ForceCloseGrace] when ctx is cancelled, the resolved remote base
-// dir, and the remote skopeo / podman / docker wrappers. SSH transport
-// is delegated entirely to the system ssh binary; auth, host-key
-// verification, ProxyCommand etc. flow through the user's ssh config.
+// Remote is the abstract peer that [Local.Push] and [Local.Pull]
+// drive. The SSH+SFTP-backed implementation returned by [NewRemote]
+// satisfies it; custom transports (a different network transport, a
+// read-only registry mirror, an in-memory test double) plug in by
+// implementing this interface.
 //
-// Build via [NewRemote]; emit [PullPeerSide] / [PushPeerSide] snapshots
-// via the methods of the same name; close with [Remote.Close].
-type Remote struct {
-	BaseDir   string
-	Transport string
-	OCIPath   string
+// Read-only implementations return true from [Remote.ReadOnly]. The
+// orchestrator refuses to push to a read-only peer; pull operations
+// that would mutate the peer (the `skopeo copy` dump step) fail
+// naturally via the underlying transport.
+type Remote interface {
+	// Close releases any subsystem resources (e.g. the ssh+sftp
+	// subprocess for [NewRemote]). Safe to call multiple times.
+	Close() error
 
-	target ssh.Target
-	runner *cli.SshRunner
+	// BaseDir is the absolute path of the peer's data dir
+	// (`<base>` in the on-disk layout described under [Store]).
+	BaseDir() string
+	// Transport is one of [TransportContainersStorage],
+	// [TransportDockerDaemon], or [TransportOCI].
+	Transport() string
+	// OCIPath is the path passed via `oci:<dir>`; only meaningful when
+	// Transport == [TransportOCI].
+	OCIPath() string
+	// Skopeo is the skopeo wrapper bound to this peer.
+	Skopeo() SkopeoLike
+	// FS is rooted at BaseDir; orchestrator-facing paths are FS-relative.
+	FS() FS
+	// Lister is the docker / podman wrapper for live image
+	// enumeration. Returns nil for [TransportOCI].
+	Lister() Lister
+	// ReadOnly reports whether mutating operations targeting this peer
+	// should be rejected.
+	ReadOnly() bool
 
-	mu      sync.Mutex
-	sftpCmd *exec.Cmd
-	sftp    *sftp.Client
-	closed  bool
+	// Validate runs peer-side sanity checks (e.g. confirms the remote
+	// skopeo is present and runnable). Implementations are expected to
+	// be cheap to call repeatedly — typically by caching the first
+	// successful result. [Local.Push] / [Local.Pull] call this before
+	// any work happens.
+	Validate(ctx context.Context) error
 
-	cancelWatch context.CancelFunc
-
-	skopeoCli *skopeo.Skopeo
-	lister    listInterface
-	fs        FS
+	// Dump runs `skopeo copy <Transport>:<ref> oci:<store-tag-dir>`,
+	// staging ref into the peer's store layout. Returns the absolute
+	// peer-side tag directory.
+	Dump(ctx context.Context, ref imageref.ImageRef) (string, error)
+	// List returns the digest set of every blob the peer has,
+	// including the share/ inventory.
+	List(ctx context.Context) (DigestSet, error)
 }
 
 // RemoteConfig configures [NewRemote].
@@ -60,11 +83,40 @@ type RemoteConfig struct {
 	OCIPath   string
 }
 
+// Compile-time check: [*sshRemote] satisfies [Remote].
+var _ Remote = (*sshRemote)(nil)
+
+// sshRemote is the SSH+SFTP-backed [Remote]. SSH transport is delegated
+// entirely to the system ssh binary; auth, host-key verification,
+// ProxyCommand etc. flow through the user's ssh config.
+type sshRemote struct {
+	baseDir   string
+	transport string
+	ociPath   string
+
+	target ssh.Target
+	runner *cli.SshRunner
+
+	mu      sync.Mutex
+	sftpCmd *exec.Cmd
+	sftp    *sftp.Client
+	closed  bool
+
+	cancelWatch context.CancelFunc
+
+	skopeoCli SkopeoLike
+	lister    Lister
+	fs        FS
+
+	validateOnce sync.Once
+	validateErr  error
+}
+
 // NewRemote spawns `ssh -s sftp`, wires its pipes into a sftp client
 // via [sftp.NewClientPipe], starts the force-close goroutine, then
-// resolves BaseDir on the remote and builds the remote skopeo wrapper
-// + a transport-appropriate lister + an FS rooted at BaseDir.
-func NewRemote(ctx context.Context, cfg RemoteConfig) (*Remote, error) {
+// resolves BaseDir on the remote and builds the remote skopeo wrapper +
+// a transport-appropriate lister + an FS rooted at BaseDir.
+func NewRemote(ctx context.Context, cfg RemoteConfig) (Remote, error) {
 	if cfg.Transport == "" {
 		return nil, errors.New("remote: transport unset")
 	}
@@ -86,9 +138,9 @@ func NewRemote(ctx context.Context, cfg RemoteConfig) (*Remote, error) {
 		}
 		return nil, fmt.Errorf("sftp: %w", err)
 	}
-	r := &Remote{
-		Transport: cfg.Transport,
-		OCIPath:   cfg.OCIPath,
+	r := &sshRemote{
+		transport: cfg.Transport,
+		ociPath:   cfg.OCIPath,
 		target:    cfg.Target,
 		runner:    cli.NewSshRunner(cfg.Target, ""),
 		sftpCmd:   cmd,
@@ -96,12 +148,12 @@ func NewRemote(ctx context.Context, cfg RemoteConfig) (*Remote, error) {
 	}
 	r.startWatch(ctx)
 
-	base, err := r.ResolveBaseDir(ctx)
+	base, err := r.resolveBaseDir(ctx)
 	if err != nil {
 		_ = r.Close()
 		return nil, fmt.Errorf("remote: resolve base dir: %w", err)
 	}
-	r.BaseDir = base
+	r.baseDir = base
 	r.fs = sftpfs.New(sftpC, base)
 	r.skopeoCli = skopeo.New(cli.NewSshRunner(cfg.Target, "skopeo"))
 	switch cfg.Transport {
@@ -117,7 +169,7 @@ func NewRemote(ctx context.Context, cfg RemoteConfig) (*Remote, error) {
 // ForceCloseGrace and then closes the underlying SFTP client and
 // kills the ssh subprocess — unblocking any pending Read/Write that
 // didn't honor the cooperative per-read cancellation.
-func (r *Remote) startWatch(parent context.Context) {
+func (r *sshRemote) startWatch(parent context.Context) {
 	wctx, cancel := context.WithCancel(parent)
 	r.cancelWatch = cancel
 	go func() {
@@ -130,13 +182,12 @@ func (r *Remote) startWatch(parent context.Context) {
 	}()
 }
 
-// ForceCloseGrace is the grace period before [Remote] hard-closes its
-// SFTP client / ssh subprocess on context cancellation.
+// ForceCloseGrace is the grace period before the SSH-backed [Remote]
+// hard-closes its SFTP client / ssh subprocess on context cancellation.
 var ForceCloseGrace = 2 * time.Second
 
-// Close closes the SFTP client and waits for the ssh subprocess to
-// exit. Safe to call multiple times.
-func (r *Remote) Close() error {
+// Close implements [Remote].
+func (r *sshRemote) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
@@ -160,7 +211,7 @@ func (r *Remote) Close() error {
 	return firstErr
 }
 
-func (r *Remote) forceClose() {
+func (r *sshRemote) forceClose() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
@@ -179,7 +230,7 @@ func (r *Remote) forceClose() {
 // waitCmd waits for the ssh subprocess to exit, capping the wait at
 // ForceCloseGrace before SIGKILL'ing it. Discards the well-known
 // "signal: killed" error that we induce ourselves.
-func (r *Remote) waitCmd() error {
+func (r *sshRemote) waitCmd() error {
 	done := make(chan error, 1)
 	go func() { done <- r.sftpCmd.Wait() }()
 	select {
@@ -199,17 +250,9 @@ func (r *Remote) waitCmd() error {
 	}
 }
 
-// SFTPRooted returns an [*sftpfs.SftpFs] rooted at base. For the
-// resolved remote BaseDir, prefer [Remote.FS].
-func (r *Remote) SFTPRooted(base string) *sftpfs.SftpFs { return sftpfs.New(r.sftp, base) }
-
-// SFTPClient returns the underlying *sftp.Client.
-func (r *Remote) SFTPClient() *sftp.Client { return r.sftp }
-
-// Run runs argv on the remote by spawning a fresh `ssh ... -- <argv>`
-// subprocess and returns the captured stdout. Delegates to the
-// embedded [*cli.SshRunner]; gates on the remote being open first.
-func (r *Remote) Run(ctx context.Context, argv []string) ([]byte, error) {
+// runRemote runs argv on the remote by spawning a fresh
+// `ssh ... -- <argv>` subprocess and returns the captured stdout.
+func (r *sshRemote) runRemote(ctx context.Context, argv []string) ([]byte, error) {
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
@@ -219,11 +262,11 @@ func (r *Remote) Run(ctx context.Context, argv []string) ([]byte, error) {
 	return r.runner.Run(ctx, argv)
 }
 
-// ResolveBaseDir returns the remote's
+// resolveBaseDir returns the remote's
 // `${XDG_DATA_HOME:-$HOME/.local/share}/skopeo-image-share` path.
 // printf is used (no trailing newline) for clean parsing.
-func (r *Remote) ResolveBaseDir(ctx context.Context) (string, error) {
-	out, err := r.Run(ctx, []string{
+func (r *sshRemote) resolveBaseDir(ctx context.Context) (string, error) {
+	out, err := r.runRemote(ctx, []string{
 		"sh", "-c",
 		`printf %s "${XDG_DATA_HOME:-$HOME/.local/share}/` + AppDirName + `"`,
 	})
@@ -237,33 +280,90 @@ func (r *Remote) ResolveBaseDir(ctx context.Context) (string, error) {
 	return base, nil
 }
 
-// Skopeo returns the remote skopeo wrapper.
-func (r *Remote) Skopeo() *skopeo.Skopeo { return r.skopeoCli }
+// BaseDir implements [Remote].
+func (r *sshRemote) BaseDir() string { return r.baseDir }
 
-// FS returns the remote [FS] rooted at BaseDir.
-func (r *Remote) FS() FS { return r.fs }
+// Transport implements [Remote].
+func (r *sshRemote) Transport() string { return r.transport }
 
-// PullPeerSide returns the snapshot consumed by [Pull] as the
-// source-of-truth side.
-func (r *Remote) PullPeerSide() PullPeerSide {
-	return PullPeerSide{
-		Skopeo:    r.skopeoCli,
-		FS:        r.fs,
-		BaseDir:   r.BaseDir,
-		Transport: r.Transport,
-		OCIPath:   r.OCIPath,
-	}
+// OCIPath implements [Remote].
+func (r *sshRemote) OCIPath() string { return r.ociPath }
+
+// Skopeo implements [Remote].
+func (r *sshRemote) Skopeo() SkopeoLike { return r.skopeoCli }
+
+// FS implements [Remote].
+func (r *sshRemote) FS() FS { return r.fs }
+
+// Lister implements [Remote].
+func (r *sshRemote) Lister() Lister { return r.lister }
+
+// ReadOnly implements [Remote]. The SSH-backed remote always reports
+// false; build a custom [Remote] to surface a read-only peer.
+func (r *sshRemote) ReadOnly() bool { return false }
+
+// Validate implements [Remote]: confirms the remote skopeo binary
+// runs. Cached after the first invocation.
+func (r *sshRemote) Validate(ctx context.Context) error {
+	r.validateOnce.Do(func() {
+		if _, err := r.skopeoCli.Version(ctx); err != nil {
+			r.validateErr = fmt.Errorf("remote skopeo: %w", err)
+		}
+	})
+	return r.validateErr
 }
 
-// PushPeerSide returns the snapshot consumed by [Push] as the peer
-// (destination) side.
-func (r *Remote) PushPeerSide() PushPeerSide {
-	return PushPeerSide{
-		Skopeo:    r.skopeoCli,
-		FS:        r.fs,
-		BaseDir:   r.BaseDir,
-		Transport: r.Transport,
-		OCIPath:   r.OCIPath,
-		Lister:    r.lister,
+// Dump implements [Remote].
+func (r *sshRemote) Dump(ctx context.Context, ref imageref.ImageRef) (string, error) {
+	if err := r.Validate(ctx); err != nil {
+		return "", err
 	}
+	return dumpRemote(ctx, r.transport, r.baseDir, r.skopeoCli, r.fs, ref)
+}
+
+// List implements [Remote].
+func (r *sshRemote) List(ctx context.Context) (DigestSet, error) {
+	return listAt(ctx, r.transport, r.skopeoCli, r.fs, r.baseDir, r.lister)
+}
+
+// dumpRemote dumps ref into the peer's oci-layout. Mirrors
+// [Local.Dump] but slash-normalizes the absolute paths handed to the
+// remote skopeo CLI (peer's filesystem is POSIX even when the host
+// running this binary is not).
+func dumpRemote(ctx context.Context, transport, baseDir string, sk SkopeoLike, fs FS, ref imageref.ImageRef) (string, error) {
+	store := NewStore(baseDir)
+	tagDirNative, err := store.DumpDir(ref)
+	if err != nil {
+		return "", err
+	}
+	tagDirAbs := filepath.ToSlash(tagDirNative)
+	tagDirRel, err := RelDumpDir(ref)
+	if err != nil {
+		return "", err
+	}
+	shareAbs := filepath.ToSlash(store.ShareDir())
+	if err := fs.MkdirAll(tagDirRel, 0o755); err != nil {
+		return "", fmt.Errorf("dump: mkdir %s: %w", tagDirRel, err)
+	}
+	if err := sk.CopyToOCI(ctx, transport, ref.String(), tagDirAbs, ref.String(), shareAbs); err != nil {
+		return "", fmt.Errorf("dump: skopeo copy: %w", err)
+	}
+	return tagDirAbs, nil
+}
+
+// listAt dispatches to [Enumerate] using the right lister for transport.
+func listAt(ctx context.Context, transport string, sk SkopeoLike, fs FS, baseDir string, lister Lister) (DigestSet, error) {
+	cfg := EnumerateConfig{
+		Transport: transport,
+		Skopeo:    sk,
+		FS:        fs,
+		BaseDir:   baseDir,
+	}
+	switch transport {
+	case TransportContainersStorage:
+		cfg.Podman = lister
+	case TransportDockerDaemon:
+		cfg.Docker = lister
+	}
+	return Enumerate(ctx, cfg)
 }

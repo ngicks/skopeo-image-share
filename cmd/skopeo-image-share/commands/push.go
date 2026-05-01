@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ngicks/skopeo-image-share/pkg/cli/ssh"
 	"github.com/ngicks/skopeo-image-share/pkg/skopeoimageshare"
 	"github.com/spf13/cobra"
 )
@@ -59,56 +58,31 @@ func runPush(cmd *cobra.Command, args []string) error {
 	images := append([]string(nil), pushFlags.images...)
 	images = append(images, args...)
 
-	if err := validateRemoteTarget(remoteTarget); err != nil {
-		return err
-	}
-
-	local, err := skopeoimageshare.NewLocal(ctx, skopeoimageshare.LocalConfig{
-		BaseDir:   pushFlags.dataDir,
-		Transport: pushFlags.localTransport,
-		OCIPath:   pushFlags.localPath,
-	})
+	share, err := initShare(ctx,
+		skopeoimageshare.LocalConfig{
+			BaseDir:   pushFlags.dataDir,
+			Transport: pushFlags.localTransport,
+			OCIPath:   pushFlags.localPath,
+		},
+		skopeoimageshare.RemoteConfig{
+			Transport: pushFlags.remoteTransport,
+			OCIPath:   pushFlags.remotePath,
+		},
+	)
 	if err != nil {
 		return err
 	}
+	defer share.Close()
 
-	if err := ssh.Probe(ctx, remoteTarget); err != nil {
-		return fmt.Errorf("ssh probe: %w", err)
-	}
-
-	remote, err := skopeoimageshare.NewRemote(ctx, skopeoimageshare.RemoteConfig{
-		Target:    remoteTarget,
-		Transport: pushFlags.remoteTransport,
-		OCIPath:   pushFlags.remotePath,
-	})
-	if err != nil {
-		return err
-	}
-	defer remote.Close()
-
-	if _, err := local.Skopeo().Version(ctx); err != nil {
-		return fmt.Errorf("local skopeo: %w", err)
-	}
-	if _, err := remote.Skopeo().Version(ctx); err != nil {
-		return fmt.Errorf("remote skopeo: %w", err)
-	}
-
-	pa := skopeoimageshare.PushArgs{
+	res, err := share.Push(ctx, skopeoimageshare.PushArgs{
 		Images:          images,
-		LocalTransport:  pushFlags.localTransport,
-		LocalPath:       pushFlags.localPath,
-		RemoteTransport: pushFlags.remoteTransport,
-		RemotePath:      pushFlags.remotePath,
-		DataDir:         local.BaseDir,
 		Jobs:            pushFlags.jobs,
 		DryRun:          pushFlags.dryRun,
 		AssumeRemoteHas: pushFlags.assumeRemoteHas,
 		KeepGoing:       pushFlags.keepGoing,
 		Retries:         pushFlags.retries,
 		RetryMaxDelay:   pushFlags.retryMaxDelay,
-	}
-
-	res, err := skopeoimageshare.Push(ctx, pa, local.PushSide(), remote.PushPeerSide())
+	})
 	for _, r := range res.Reports {
 		fmt.Fprintln(cmd.OutOrStdout(), r.SummaryLine())
 	}

@@ -1,4 +1,4 @@
-package skopeoimageshare
+package ocidir
 
 import (
 	"errors"
@@ -48,11 +48,11 @@ func buildOCIDump(t *testing.T) (dumpDir, shareDir, manifestDigest string) {
 	return dumpDir, shareDir, manifestDigest
 }
 
-func TestOCIClosure_OCIManifest(t *testing.T) {
+func TestReadClosure_OCIManifest(t *testing.T) {
 	t.Parallel()
 	dumpDir, shareDir, manifestDigest := buildOCIDump(t)
 
-	c, err := OCIClosure(LocalBlobReader{}, dumpDir, shareDir)
+	c, err := ReadClosure(LocalBlobReader{}, dumpDir, shareDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestOCIClosure_OCIManifest(t *testing.T) {
 	}
 }
 
-func TestOCIClosure_DockerV2(t *testing.T) {
+func TestReadClosure_DockerV2(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	dumpDir := filepath.Join(root, "_tags", "v1")
@@ -91,7 +91,7 @@ func TestOCIClosure_DockerV2(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c, err := OCIClosure(LocalBlobReader{}, dumpDir, shareDir)
+	c, err := ReadClosure(LocalBlobReader{}, dumpDir, shareDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestOCIClosure_DockerV2(t *testing.T) {
 	}
 }
 
-func TestOCIClosure_MissingManifestBlob(t *testing.T) {
+func TestReadClosure_MissingManifestBlob(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	dumpDir := filepath.Join(root, "_tags", "v1")
@@ -118,7 +118,7 @@ func TestOCIClosure_MissingManifestBlob(t *testing.T) {
 		t.Fatal(err)
 	}
 	// (no manifest blob)
-	_, err := OCIClosure(LocalBlobReader{}, dumpDir, shareDir)
+	_, err := ReadClosure(LocalBlobReader{}, dumpDir, shareDir)
 	if !errors.Is(err, ErrMissingManifestBlob) {
 		t.Fatalf("expected ErrMissingManifestBlob, got %v", err)
 	}
@@ -139,16 +139,5 @@ func TestSplitDigest(t *testing.T) {
 	}
 	if _, _, err := SplitDigest(":x"); err == nil {
 		t.Error("expected error for empty algo")
-	}
-}
-
-func TestPosixBlobPath(t *testing.T) {
-	t.Parallel()
-	p, err := PosixBlobPath("/r/share", "sha256:"+strings.Repeat("a", 64))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p != "/r/share/sha256/"+strings.Repeat("a", 64) {
-		t.Errorf("got %q", p)
 	}
 }

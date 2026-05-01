@@ -2,8 +2,6 @@ package skopeoimageshare
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -12,6 +10,8 @@ import (
 	"path"
 
 	"github.com/ngicks/go-common/contextkey"
+	"github.com/ngicks/skopeo-image-share/pkg/ocidir"
+	"github.com/opencontainers/go-digest"
 )
 
 // Transport names recognized by [Enumerate].
@@ -81,12 +81,15 @@ func Enumerate(ctx context.Context, cfg EnumerateConfig) (DigestSet, error) {
 	}
 }
 
-// listInterface unifies PodmanLister and DockerLister.
-type listInterface interface {
+// Lister is the minimal interface used to enumerate live image refs
+// via the docker / podman CLI. It unifies [PodmanLister] and
+// [DockerLister]; concrete types satisfying either also satisfy
+// [Lister] structurally.
+type Lister interface {
 	ImageLs(ctx context.Context) ([]string, error)
 }
 
-func enumerateViaSkopeoInspect(ctx context.Context, cfg EnumerateConfig, lister listInterface, transport string) (DigestSet, error) {
+func enumerateViaSkopeoInspect(ctx context.Context, cfg EnumerateConfig, lister Lister, transport string) (DigestSet, error) {
 	if lister == nil {
 		return nil, fmt.Errorf("enumerate %s: missing lister", transport)
 	}
@@ -115,7 +118,7 @@ func enumerateViaSkopeoInspect(ctx context.Context, cfg EnumerateConfig, lister 
 			)
 			continue
 		}
-		man, err := ParseManifest(raw)
+		man, err := ocidir.ParseManifest(raw)
 		if err != nil {
 			logger.LogAttrs(ctx, slog.LevelWarn, "enumerate.parse.skip",
 				slog.String("transport", transport),
@@ -124,9 +127,9 @@ func enumerateViaSkopeoInspect(ctx context.Context, cfg EnumerateConfig, lister 
 			)
 			continue
 		}
-		out.Add(DigestBytes(raw))
-		out.Add(man.Config.Digest)
-		for _, l := range man.LayerDigests() {
+		out.Add(ocidir.DigestBytes(raw))
+		out.Add(string(man.Config.Digest))
+		for _, l := range ocidir.LayerDigests(man) {
 			out.Add(l)
 		}
 	}
@@ -161,7 +164,7 @@ func enumerateOCI(ctx context.Context, cfg EnumerateConfig) (DigestSet, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		c, err := OCIClosure(reader, d, "share")
+		c, err := ocidir.ReadClosure(reader, d, "share")
 		if err != nil {
 			logger.LogAttrs(ctx, slog.LevelWarn, "enumerate.oci.closure.skip",
 				slog.String("dump", d),
@@ -180,14 +183,14 @@ func enumerateOCI(ctx context.Context, cfg EnumerateConfig) (DigestSet, error) {
 	return out, nil
 }
 
-// fsBlobReader adapts an [FS] to [BlobReader].
+// fsBlobReader adapts an [FS] to [ocidir.BlobReader].
 type fsBlobReader struct{ fs FS }
 
 func (b fsBlobReader) ReadIndexJSON(dumpDir string) ([]byte, error) {
 	return readAllVia(b.fs, path.Join(dumpDir, "index.json"))
 }
-func (b fsBlobReader) ReadBlob(shareDir, digest string) ([]byte, error) {
-	algo, hex, err := SplitDigest(digest)
+func (b fsBlobReader) ReadBlob(shareDir, d string) ([]byte, error) {
+	algo, hex, err := ocidir.SplitDigest(d)
 	if err != nil {
 		return nil, err
 	}
@@ -294,16 +297,11 @@ func unionShareInventory(dst DigestSet, f FS, shareDir string) error {
 			continue
 		}
 		name := e.Name()
-		if len(name) != DigestHexLen {
+		if len(name) != digest.SHA256.Size()*2 {
 			continue
 		}
-		dst.Add(DigestPrefix + name)
+		dst.Add(digest.SHA256.String() + ":" + name)
 	}
 	return nil
 }
 
-// DigestBytes returns the sha256 digest of b in `sha256:<hex>` form.
-func DigestBytes(b []byte) string {
-	h := sha256.Sum256(b)
-	return DigestPrefix + hex.EncodeToString(h[:])
-}

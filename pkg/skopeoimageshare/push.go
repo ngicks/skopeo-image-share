@@ -6,34 +6,22 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"path"
+	"path/filepath"
 	"sort"
 	"time"
 
 	"github.com/ngicks/go-common/contextkey"
 	"github.com/ngicks/skopeo-image-share/pkg/cli"
+	"github.com/ngicks/skopeo-image-share/pkg/imageref"
+	"github.com/ngicks/skopeo-image-share/pkg/ocidir"
 )
 
-// PushArgs configures one [Push] invocation. Flags surfaced via the
-// CLI (`cmd/skopeo-image-share/commands/push.go`) map 1:1 to fields on
-// this struct; keep the cobra side a translation layer only.
+// PushArgs configures one [Local.Push] invocation. Flags surfaced via
+// the CLI (`cmd/skopeo-image-share/commands/push.go`) map 1:1 to fields
+// on this struct; keep the cobra side a translation layer only.
 type PushArgs struct {
 	// Images is the list of refs to push (e.g. "ghcr.io/a/b:c").
 	Images []string
-
-	// LocalTransport is "containers-storage", "docker-daemon", or "oci".
-	LocalTransport string
-	// LocalPath is required when LocalTransport == "oci"; otherwise unused.
-	LocalPath string
-
-	// RemoteTransport mirrors LocalTransport on the peer side.
-	RemoteTransport string
-	// RemotePath is required when RemoteTransport == "oci".
-	RemotePath string
-
-	// DataDir overrides the local app data dir (defaults to
-	// `${XDG_DATA_HOME:-$HOME/.local/share}/skopeo-image-share`).
-	DataDir string
 
 	// Jobs is per-blob parallelism; 0 → 4.
 	Jobs int
@@ -48,6 +36,11 @@ type PushArgs struct {
 	// caller already knows the peer's blob inventory.
 	AssumeRemoteHas []string
 
+	// AssumeRemoteHasSet is the higher-level form of AssumeRemoteHas
+	// (already parsed to a [DigestSet]). When non-nil it takes
+	// precedence over [PushArgs.AssumeRemoteHas].
+	AssumeRemoteHasSet DigestSet
+
 	// KeepGoing makes per-image errors non-fatal: the run accumulates
 	// failures and exits non-zero with a final failure count, rather
 	// than short-circuiting on the first error.
@@ -59,52 +52,24 @@ type PushArgs struct {
 	RetryMaxDelay time.Duration
 }
 
-// PushSide bundles the local-side dependencies that the orchestrator
-// uses. Both real (the [Skopeo] wrapper) and fakes (test
-// implementations) plug in here.
-type PushSide struct {
-	Skopeo    SkopeoLike
-	FS        FS
-	BaseDir   string
-	Transport string // canonical, e.g. "containers-storage"
-	OCIPath   string // required when Transport == "oci"
-}
-
-// PushPeerSide bundles the peer-side dependencies plus enumeration
-// inputs. RemoteHas overrides the lister-based enumeration when set.
-type PushPeerSide struct {
-	Skopeo    SkopeoLike
-	FS        FS
-	BaseDir   string
-	Transport string
-	OCIPath   string
-
-	// Lister is required when Transport == containers-storage / docker-daemon
-	// and AssumeHas is empty (we then enumerate via Skopeo+Lister).
-	Lister listInterface
-
-	// AssumeHas, if non-nil, replaces enumeration entirely.
-	AssumeHas DigestSet
-}
-
-// SkopeoLike abstracts [*Skopeo] so tests can substitute a fake. The
-// methods are the four we drive in push/pull orchestration.
+// SkopeoLike abstracts [*skopeo.Skopeo] so tests can substitute a fake.
+// The methods are the four we drive in push/pull orchestration.
 type SkopeoLike interface {
 	Version(ctx context.Context) (string, error)
 	InspectRaw(ctx context.Context, transport, ref string) ([]byte, error)
-	CopyToOCI(ctx context.Context, srcTransport, srcRef, ociDir, sharedBlobDir string) error
-	CopyFromOCI(ctx context.Context, ociDir, sharedBlobDir, dstTransport, dstRef string) error
+	CopyToOCI(ctx context.Context, srcTransport, srcRef, ociDir, imageRef, sharedBlobDir string) error
+	CopyFromOCI(ctx context.Context, ociDir, imageRef, sharedBlobDir, dstTransport, dstRef string) error
 }
 
 // PushImageReport is the per-image summary line surfaced in the CLI
 // output. Errors land in Err; on success Err is nil.
 type PushImageReport struct {
-	Ref        ImageRef
-	Sent       int   // blobs actually transferred
-	Reused     int   // blobs the peer already had (skipped)
-	BytesSent  int64 // sum of expected sizes of transferred blobs
-	DryRun     bool
-	Err        error
+	Ref       imageref.ImageRef
+	Sent      int   // blobs actually transferred
+	Reused    int   // blobs the peer already had (skipped)
+	BytesSent int64 // sum of expected sizes of transferred blobs
+	DryRun    bool
+	Err       error
 }
 
 // PushResult is the aggregate of per-image reports.
@@ -113,14 +78,20 @@ type PushResult struct {
 	FailedCount int
 }
 
-// Push orchestrates the push direction for every ref in args.Images.
-// The function honors --dry-run (no mutation anywhere), --keep-going
+// Push orchestrates the push direction (local → peer) for every ref in
+// args.Images. Honors --dry-run (no mutation anywhere), --keep-going
 // (continue on per-image error), and --assume-remote-has (skip
 // enumeration of the peer).
-func Push(ctx context.Context, args PushArgs, local PushSide, peer PushPeerSide) (PushResult, error) {
+func (l *Local) Push(ctx context.Context, args PushArgs, peer Remote) (PushResult, error) {
 	logger := contextkey.ValueSlogLoggerDefault(ctx)
 
-	if err := validatePushArgs(args, local, peer); err != nil {
+	if err := validatePush(args, l, peer); err != nil {
+		return PushResult{}, err
+	}
+	if err := l.Validate(ctx); err != nil {
+		return PushResult{}, err
+	}
+	if err := peer.Validate(ctx); err != nil {
 		return PushResult{}, err
 	}
 
@@ -129,13 +100,13 @@ func Push(ctx context.Context, args PushArgs, local PushSide, peer PushPeerSide)
 		jobs = 4
 	}
 
-	remoteHas, err := resolveRemoteHas(ctx, args.AssumeRemoteHas, peer)
+	remoteHas, err := resolveRemoteHas(ctx, args, peer)
 	if err != nil {
 		return PushResult{}, fmt.Errorf("push: enumerate remote: %w", err)
 	}
 	logger.LogAttrs(ctx, slog.LevelInfo, "push.remote-has",
 		slog.Int("blobs", len(remoteHas)),
-		slog.Bool("from-flag", peer.AssumeHas != nil || len(args.AssumeRemoteHas) > 0),
+		slog.Bool("from-flag", args.AssumeRemoteHasSet != nil || len(args.AssumeRemoteHas) > 0),
 	)
 
 	var result PushResult
@@ -143,9 +114,9 @@ func Push(ctx context.Context, args PushArgs, local PushSide, peer PushPeerSide)
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
-		ref, err := ParseImageRef(raw)
+		ref, err := imageref.Parse(raw)
 		if err != nil {
-			rep := PushImageReport{Ref: ImageRef{Original: raw}, DryRun: args.DryRun, Err: err}
+			rep := PushImageReport{Ref: imageref.ImageRef{Original: raw}, DryRun: args.DryRun, Err: err}
 			result.Reports = append(result.Reports, rep)
 			result.FailedCount++
 			if !args.KeepGoing {
@@ -154,7 +125,7 @@ func Push(ctx context.Context, args PushArgs, local PushSide, peer PushPeerSide)
 			continue
 		}
 
-		rep := pushOne(ctx, args, local, peer, remoteHas, ref, jobs)
+		rep := pushOne(ctx, args, l, peer, remoteHas, ref, jobs)
 		result.Reports = append(result.Reports, rep)
 		if rep.Err != nil {
 			result.FailedCount++
@@ -166,85 +137,58 @@ func Push(ctx context.Context, args PushArgs, local PushSide, peer PushPeerSide)
 	return result, nil
 }
 
-// validatePushArgs returns an error for missing required-by-transport fields.
-func validatePushArgs(args PushArgs, local PushSide, peer PushPeerSide) error {
+// validatePush returns an error for missing required-by-transport fields.
+func validatePush(args PushArgs, local *Local, peer Remote) error {
 	if len(args.Images) == 0 {
 		return errors.New("push: no images")
 	}
-	if local.Transport == "" {
+	if local.transport == "" {
 		return errors.New("push: local transport unset")
 	}
-	if peer.Transport == "" {
+	if peer.Transport() == "" {
 		return errors.New("push: remote transport unset")
 	}
-	if local.BaseDir == "" {
+	if local.baseDir == "" {
 		return errors.New("push: local base dir unset")
 	}
-	if peer.BaseDir == "" {
+	if peer.BaseDir() == "" {
 		return errors.New("push: remote base dir unset")
+	}
+	if peer.ReadOnly() {
+		return errors.New("push: peer is read-only")
 	}
 	return nil
 }
 
-// resolveRemoteHas builds the peer-has set, honoring the
-// AssumeRemoteHas shortcut (per PLAN §4.2). The CLI flag values arrive
-// as raw strings; PushPeerSide.AssumeHas is the higher-level form
-// (already parsed to a DigestSet) used by tests.
-func resolveRemoteHas(ctx context.Context, assumeRaw []string, peer PushPeerSide) (DigestSet, error) {
-	if peer.AssumeHas != nil {
-		return peer.AssumeHas, nil
+// resolveRemoteHas builds the peer-has set, honoring the assume-remote-has
+// shortcut.
+func resolveRemoteHas(ctx context.Context, args PushArgs, peer Remote) (DigestSet, error) {
+	if args.AssumeRemoteHasSet != nil {
+		return args.AssumeRemoteHasSet, nil
 	}
-	if len(assumeRaw) > 0 {
+	if len(args.AssumeRemoteHas) > 0 {
 		ds := NewDigestSet()
-		for _, d := range assumeRaw {
+		for _, d := range args.AssumeRemoteHas {
 			ds.Add(d)
 		}
 		return ds, nil
 	}
-	cfg := EnumerateConfig{
-		Transport: peer.Transport,
-		Skopeo:    peer.Skopeo,
-		FS:        peer.FS,
-		BaseDir:   peer.BaseDir,
-	}
-	switch peer.Transport {
-	case TransportContainersStorage:
-		if pl, ok := peer.Lister.(PodmanLister); ok {
-			cfg.Podman = pl
-		} else if peer.Lister != nil {
-			cfg.Podman = listerAdapter{peer.Lister}
-		}
-	case TransportDockerDaemon:
-		if dl, ok := peer.Lister.(DockerLister); ok {
-			cfg.Docker = dl
-		} else if peer.Lister != nil {
-			cfg.Docker = listerAdapter{peer.Lister}
-		}
-	}
-	return Enumerate(ctx, cfg)
-}
-
-// listerAdapter lets a generic listInterface satisfy both
-// PodmanLister and DockerLister.
-type listerAdapter struct{ inner listInterface }
-
-func (l listerAdapter) ImageLs(ctx context.Context) ([]string, error) {
-	return l.inner.ImageLs(ctx)
+	return peer.List(ctx)
 }
 
 func pushOne(
 	ctx context.Context,
 	args PushArgs,
-	local PushSide,
-	peer PushPeerSide,
+	local *Local,
+	peer Remote,
 	remoteHas DigestSet,
-	ref ImageRef,
+	ref imageref.ImageRef,
 	jobs int,
 ) PushImageReport {
 	logger := contextkey.ValueSlogLoggerDefault(ctx)
 	rep := PushImageReport{Ref: ref, DryRun: args.DryRun}
 
-	store := NewStore(local.BaseDir)
+	store := NewStore(local.baseDir)
 	tagDirAbs, err := store.DumpDir(ref)
 	if err != nil {
 		rep.Err = err
@@ -257,12 +201,17 @@ func pushOne(
 	}
 	localShareAbs := store.ShareDir()
 	localShareRel := RelSharePath()
-	remoteTagDirAbs := remoteDumpDirPosix(peer.BaseDir, ref)
-	remoteTagDirRel := relRemoteDumpDir(ref)
-	remoteShareAbs := PosixSharePath(peer.BaseDir)
-	remoteShareRel := RelSharePath()
+	remoteStore := NewStore(peer.BaseDir())
+	remoteTagDirNative, err := remoteStore.DumpDir(ref)
+	if err != nil {
+		rep.Err = err
+		return rep
+	}
+	remoteTagDirAbs := filepath.ToSlash(remoteTagDirNative)
+	remoteTagDirRel := tagDirRel
+	remoteShareAbs := filepath.ToSlash(remoteStore.ShareDir())
 
-	closure, sizes, err := dumpAndDeriveClosure(ctx, args, local, ref, tagDirAbs, tagDirRel, localShareAbs, localShareRel)
+	closure, sizes, err := dumpAndDeriveClosurePush(ctx, args, local, ref, tagDirAbs, tagDirRel, localShareAbs, localShareRel)
 	if err != nil {
 		rep.Err = fmt.Errorf("dump: %w", err)
 		return rep
@@ -278,7 +227,7 @@ func pushOne(
 	}
 
 	if !args.DryRun {
-		if err := transferTagDir(ctx, local.FS, tagDirRel, peer.FS, remoteTagDirRel); err != nil {
+		if err := transferTagDir(ctx, local.fs, tagDirRel, peer.FS(), remoteTagDirRel); err != nil {
 			rep.Err = fmt.Errorf("tag-dir sync: %w", err)
 			return rep
 		}
@@ -296,7 +245,6 @@ func pushOne(
 			slog.Int("blobs", len(digestsSorted)),
 			slog.Int64("bytes", bytesSent),
 		)
-		_, _ = localShareRel, remoteShareRel
 	} else {
 		runJobs := make([]Job, 0, len(digestsSorted))
 		for _, d := range digestsSorted {
@@ -310,7 +258,7 @@ func pushOne(
 			runJobs = append(runJobs, Job{
 				ID: d,
 				Run: func(ctx context.Context) error {
-					return TransferBlob(ctx, local.FS, srcPath, peer.FS, dstPath, expectedSize)
+					return TransferBlob(ctx, local.fs, srcPath, peer.FS(), dstPath, expectedSize)
 				},
 			})
 		}
@@ -331,7 +279,7 @@ func pushOne(
 	rep.BytesSent = bytesSent
 
 	if !args.DryRun {
-		if err := peer.Skopeo.CopyFromOCI(ctx, remoteTagDirAbs, remoteShareAbs, peer.Transport, ref.String()); err != nil {
+		if err := peer.Skopeo().CopyFromOCI(ctx, remoteTagDirAbs, ref.String(), remoteShareAbs, peer.Transport(), ref.String()); err != nil {
 			rep.Err = fmt.Errorf("remote load: %w", err)
 			return rep
 		}
@@ -343,48 +291,47 @@ func pushOne(
 	return rep
 }
 
-// dumpAndDeriveClosure runs `skopeo copy ... oci:<tagDir>` (or, on
+// dumpAndDeriveClosurePush runs `skopeo copy ... oci:<tagDir>` (or, on
 // --dry-run, `skopeo inspect --raw`) and returns the digest closure
 // plus a digest→size map for the toSend ordering.
-func dumpAndDeriveClosure(
+func dumpAndDeriveClosurePush(
 	ctx context.Context,
 	args PushArgs,
-	local PushSide,
-	ref ImageRef,
+	local *Local,
+	ref imageref.ImageRef,
 	tagDirAbs, tagDirRel, localShareAbs, localShareRel string,
-) (Closure, map[string]int64, error) {
-	srcTransport := local.Transport
+) (ocidir.Closure, map[string]int64, error) {
+	srcTransport := local.transport
 	srcRef := ref.String()
 
 	if !args.DryRun {
-		if err := local.FS.MkdirAll(tagDirRel, 0o755); err != nil {
-			return Closure{}, nil, fmt.Errorf("mkdir %s: %w", tagDirRel, err)
+		if err := local.fs.MkdirAll(tagDirRel, 0o755); err != nil {
+			return ocidir.Closure{}, nil, fmt.Errorf("mkdir %s: %w", tagDirRel, err)
 		}
-		if err := local.Skopeo.CopyToOCI(ctx, srcTransport, srcRef, tagDirAbs, localShareAbs); err != nil {
-			return Closure{}, nil, fmt.Errorf("skopeo copy: %w", err)
+		if err := local.skopeoCli.CopyToOCI(ctx, srcTransport, srcRef, tagDirAbs, srcRef, localShareAbs); err != nil {
+			return ocidir.Closure{}, nil, fmt.Errorf("skopeo copy: %w", err)
 		}
 
-		c, err := OCIClosure(fsBlobReader{fs: local.FS}, tagDirRel, localShareRel)
+		c, err := ocidir.ReadClosure(fsBlobReader{fs: local.fs}, tagDirRel, localShareRel)
 		if err != nil {
-			return Closure{}, nil, fmt.Errorf("ociclosure: %w", err)
+			return ocidir.Closure{}, nil, fmt.Errorf("ocidir: %w", err)
 		}
-		sizes := blobSizes(local.FS, c)
+		sizes := blobSizes(local.fs, c)
 		return c, sizes, nil
 	}
 
-	// dry-run path: inspect manifest directly.
-	raw, err := local.Skopeo.InspectRaw(ctx, srcTransport, srcRef)
+	raw, err := local.skopeoCli.InspectRaw(ctx, srcTransport, srcRef)
 	if err != nil {
-		return Closure{}, nil, fmt.Errorf("skopeo inspect --raw: %w", err)
+		return ocidir.Closure{}, nil, fmt.Errorf("skopeo inspect --raw: %w", err)
 	}
-	man, err := ParseManifest(raw)
+	man, err := ocidir.ParseManifest(raw)
 	if err != nil {
-		return Closure{}, nil, fmt.Errorf("parse manifest: %w", err)
+		return ocidir.Closure{}, nil, fmt.Errorf("parse manifest: %w", err)
 	}
-	c := Closure{
-		ManifestDigest: DigestBytes(raw),
-		ConfigDigest:   man.Config.Digest,
-		LayerDigests:   man.LayerDigests(),
+	c := ocidir.Closure{
+		ManifestDigest: ocidir.DigestBytes(raw),
+		ConfigDigest:   string(man.Config.Digest),
+		LayerDigests:   ocidir.LayerDigests(man),
 	}
 	sizes := map[string]int64{c.ManifestDigest: int64(len(raw))}
 	if man.Config.Size > 0 {
@@ -392,7 +339,7 @@ func dumpAndDeriveClosure(
 	}
 	for _, l := range man.Layers {
 		if l.Size > 0 {
-			sizes[l.Digest] = l.Size
+			sizes[string(l.Digest)] = l.Size
 		}
 	}
 	return c, sizes, nil
@@ -401,7 +348,7 @@ func dumpAndDeriveClosure(
 // blobSizes returns size for every digest in c.AllDigests() found
 // under the FS's share/ directory (relative path). Missing blobs are
 // assigned size 0.
-func blobSizes(fs FS, c Closure) map[string]int64 {
+func blobSizes(fs FS, c ocidir.Closure) map[string]int64 {
 	out := make(map[string]int64)
 	for d := range c.AllDigests() {
 		p, err := RelBlobPath(d)
@@ -420,25 +367,6 @@ func blobSizes(fs FS, c Closure) map[string]int64 {
 func transferTagDir(ctx context.Context, srcFS FS, srcDir string, dstFS FS, dstDir string) error {
 	return CopyTagDirSmallFiles(ctx, srcFS, srcDir, dstFS, dstDir,
 		[]string{"oci-layout", "index.json"})
-}
-
-// remoteDumpDirPosix returns the peer-side tagDir / digestDir for ref
-// in slash-form (absolute, suitable for the remote skopeo CLI).
-func remoteDumpDirPosix(base string, r ImageRef) string {
-	if r.IsDigested() {
-		return PosixDigestPath(base, r.Host, r.Path, r.Digest)
-	}
-	return PosixTagPath(base, r.Host, r.Path, r.Tag)
-}
-
-// relRemoteDumpDir returns the peer-side dump dir relative to the
-// peer base — suitable for FS calls on a [*sftpfs.SftpFs] rooted at
-// peer base.
-func relRemoteDumpDir(r ImageRef) string {
-	if r.IsDigested() {
-		return RelDigestPath(r.Host, r.Path, r.Digest)
-	}
-	return RelTagPath(r.Host, r.Path, r.Tag)
 }
 
 // sortedDigests returns ds in lexical order so transfer scheduling is
@@ -476,6 +404,3 @@ func (r PushImageReport) SummaryLine() string {
 	return fmt.Sprintf("%s%s pushed (new: %d, reused: %d, bytes: %d)",
 		prefix, r.Ref.String(), r.Sent, r.Reused, r.BytesSent)
 }
-
-// path joiner for code that doesn't import "path"
-var _ = path.Join

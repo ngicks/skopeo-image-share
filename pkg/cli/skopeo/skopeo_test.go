@@ -73,7 +73,7 @@ func TestSkopeo_CopyToOCI_Argv(t *testing.T) {
 	s := New(r)
 	err := s.CopyToOCI(context.Background(),
 		"containers-storage", "ghcr.io/a/b:c",
-		"/tmp/oci/_tags/c", "/tmp/share")
+		"/tmp/oci/_tags/c", "ghcr.io/a/b:c", "/tmp/share")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestSkopeo_CopyToOCI_Argv(t *testing.T) {
 		"copy", "--preserve-digests",
 		"--dest-shared-blob-dir", "/tmp/share",
 		"containers-storage:ghcr.io/a/b:c",
-		"oci:/tmp/oci/_tags/c",
+		"oci:/tmp/oci/_tags/c:ghcr.io/a/b:c",
 	}}
 	if !reflect.DeepEqual(r.got, want) {
 		t.Errorf("argv mismatch:\n got: %v\nwant: %v", r.got, want)
@@ -93,7 +93,7 @@ func TestSkopeo_CopyFromOCI_Argv(t *testing.T) {
 	r := &stubRunner{}
 	s := New(r)
 	err := s.CopyFromOCI(context.Background(),
-		"/tmp/oci/_tags/c", "/tmp/share",
+		"/tmp/oci/_tags/c", "ghcr.io/a/b:c", "/tmp/share",
 		"containers-storage", "ghcr.io/a/b:c")
 	if err != nil {
 		t.Fatal(err)
@@ -101,11 +101,33 @@ func TestSkopeo_CopyFromOCI_Argv(t *testing.T) {
 	want := [][]string{{
 		"copy", "--preserve-digests",
 		"--src-shared-blob-dir", "/tmp/share",
-		"oci:/tmp/oci/_tags/c",
+		"oci:/tmp/oci/_tags/c:ghcr.io/a/b:c",
 		"containers-storage:ghcr.io/a/b:c",
 	}}
 	if !reflect.DeepEqual(r.got, want) {
 		t.Errorf("argv mismatch:\n got: %v\nwant: %v", r.got, want)
+	}
+}
+
+func TestSkopeo_CopyToOCI_RejectsEmptyDirOrRef(t *testing.T) {
+	t.Parallel()
+	s := New(&stubRunner{})
+	if err := s.CopyToOCI(context.Background(), "containers-storage", "x:y", "", "x:y", "/share"); err == nil {
+		t.Error("expected error for empty ociDir")
+	}
+	if err := s.CopyToOCI(context.Background(), "containers-storage", "x:y", "/dir", "", "/share"); err == nil {
+		t.Error("expected error for empty imageRef")
+	}
+}
+
+func TestSkopeo_CopyFromOCI_RejectsEmptyDirOrRef(t *testing.T) {
+	t.Parallel()
+	s := New(&stubRunner{})
+	if err := s.CopyFromOCI(context.Background(), "", "x:y", "/share", "containers-storage", "x:y"); err == nil {
+		t.Error("expected error for empty ociDir")
+	}
+	if err := s.CopyFromOCI(context.Background(), "/dir", "", "/share", "containers-storage", "x:y"); err == nil {
+		t.Error("expected error for empty imageRef")
 	}
 }
 
@@ -118,11 +140,11 @@ func TestSkopeo_CompressionArgs(t *testing.T) {
 	s.ForceCompression = true
 	if err := s.CopyToOCI(context.Background(),
 		"containers-storage", "ghcr.io/a/b:c",
-		"/tmp/oci/_tags/c", "/tmp/share"); err != nil {
+		"/tmp/oci/_tags/c", "ghcr.io/a/b:c", "/tmp/share"); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.CopyFromOCI(context.Background(),
-		"/tmp/oci/_tags/c", "/tmp/share",
+		"/tmp/oci/_tags/c", "ghcr.io/a/b:c", "/tmp/share",
 		"containers-storage", "ghcr.io/a/b:c"); err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +156,7 @@ func TestSkopeo_CompressionArgs(t *testing.T) {
 			"--force-compression",
 			"--dest-shared-blob-dir", "/tmp/share",
 			"containers-storage:ghcr.io/a/b:c",
-			"oci:/tmp/oci/_tags/c",
+			"oci:/tmp/oci/_tags/c:ghcr.io/a/b:c",
 		},
 		{
 			"copy", "--preserve-digests",
@@ -142,7 +164,7 @@ func TestSkopeo_CompressionArgs(t *testing.T) {
 			"--compression-level", "19",
 			"--force-compression",
 			"--src-shared-blob-dir", "/tmp/share",
-			"oci:/tmp/oci/_tags/c",
+			"oci:/tmp/oci/_tags/c:ghcr.io/a/b:c",
 			"containers-storage:ghcr.io/a/b:c",
 		},
 	}

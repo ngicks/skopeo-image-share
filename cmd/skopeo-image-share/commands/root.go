@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/ngicks/skopeo-image-share/pkg/cli/ssh"
+	"github.com/ngicks/skopeo-image-share/pkg/skopeoimageshare"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -49,4 +50,28 @@ func validateRemoteTarget(t ssh.Target) error {
 		return fmt.Errorf("--remote-port must be non-negative")
 	}
 	return nil
+}
+
+// initShare builds a [*skopeoimageshare.Local] + SSH-backed
+// [skopeoimageshare.Remote] and wraps them in a [*skopeoimageshare.Share].
+// Validates the remote target, runs an ssh probe, and dials sftp.
+// remoteCfg.Target is filled in from the bound CLI flags. Caller is
+// responsible for share.Close().
+func initShare(ctx context.Context, localCfg skopeoimageshare.LocalConfig, remoteCfg skopeoimageshare.RemoteConfig) (*skopeoimageshare.Share, error) {
+	remoteCfg.Target = remoteTarget
+	if err := validateRemoteTarget(remoteCfg.Target); err != nil {
+		return nil, err
+	}
+	local, err := skopeoimageshare.NewLocal(ctx, localCfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := ssh.Probe(ctx, remoteCfg.Target); err != nil {
+		return nil, fmt.Errorf("ssh probe: %w", err)
+	}
+	remote, err := skopeoimageshare.NewRemote(ctx, remoteCfg)
+	if err != nil {
+		return nil, err
+	}
+	return skopeoimageshare.NewShare(local, remote), nil
 }

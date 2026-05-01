@@ -1,4 +1,4 @@
-package skopeoimageshare
+package ocidir
 
 import (
 	"strings"
@@ -63,10 +63,10 @@ func TestParseManifest_OCI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.Config.Digest != "sha256:"+strings.Repeat("1", 64) {
+	if string(m.Config.Digest) != "sha256:"+strings.Repeat("1", 64) {
 		t.Errorf("config digest = %q", m.Config.Digest)
 	}
-	if got := m.LayerDigests(); len(got) != 2 {
+	if got := LayerDigests(m); len(got) != 2 {
 		t.Errorf("got %d layers, want 2", len(got))
 	}
 }
@@ -77,10 +77,10 @@ func TestParseManifest_Docker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.Config.Digest != "sha256:"+strings.Repeat("2", 64) {
+	if string(m.Config.Digest) != "sha256:"+strings.Repeat("2", 64) {
 		t.Errorf("config digest = %q", m.Config.Digest)
 	}
-	if got := m.LayerDigests(); len(got) != 1 {
+	if got := LayerDigests(m); len(got) != 1 {
 		t.Errorf("got %d layers, want 1", len(got))
 	}
 }
@@ -116,7 +116,7 @@ func TestParseIndex_OK(t *testing.T) {
 	if len(idx.Manifests) != 1 {
 		t.Fatalf("got %d manifests", len(idx.Manifests))
 	}
-	if idx.Manifests[0].Digest != "sha256:"+strings.Repeat("d", 64) {
+	if string(idx.Manifests[0].Digest) != "sha256:"+strings.Repeat("d", 64) {
 		t.Errorf("manifest digest = %q", idx.Manifests[0].Digest)
 	}
 }
@@ -126,5 +126,14 @@ func TestParseIndex_Empty(t *testing.T) {
 	_, err := ParseIndex([]byte(`{"schemaVersion":2,"manifests":[]}`))
 	if err == nil {
 		t.Fatal("expected error for empty manifests")
+	}
+}
+
+func TestDigestBytes(t *testing.T) {
+	t.Parallel()
+	got := DigestBytes([]byte(""))
+	want := "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	if got != want {
+		t.Errorf("DigestBytes(\"\") = %q, want %q", got, want)
 	}
 }
