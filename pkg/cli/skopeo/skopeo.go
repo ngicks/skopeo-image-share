@@ -31,32 +31,36 @@ type TransportRef struct {
 	Arg2 string
 }
 
+func (r TransportRef) Format() (string, error) {
+	return appendTransportRef(r.Transport, r.Arg1, r.Arg2)
+}
+
 // appendTransportRef appends ref to transport.
 // See https://github.com/containers/skopeo/blob/main/docs/skopeo.1.md#image-names
-func appendTransportRef(transport, ref, tag string) (string, error) {
+func appendTransportRef(transport Transport, ref, tag string) (string, error) {
 	if ref == "" {
 		return "", fmt.Errorf("empty ref: %q:%q:%q", transport, ref, tag)
 	}
 	switch transport {
-	case "containers-storage", "dir":
+	case TransportContainersStorage, TransportDir:
 		// containers-storage:docker-reference
 		// dir:path
-		return transport + ":" + ref, nil
-	case "docker":
+		return string(transport) + ":" + ref, nil
+	case TransportDocker:
 		// docker://docker-reference
-		return transport + "://" + ref, nil
-	case "docker-archive":
+		return string(transport) + "://" + ref, nil
+	case TransportDockerArchive:
 		// docker-archive:path[:docker-reference]
 		if tag != "" {
-			return transport + ":" + ref + ":" + tag, nil
+			return string(transport) + ":" + ref + ":" + tag, nil
 		}
-		return transport + ":" + ref, nil
-	case "oci":
+		return string(transport) + ":" + ref, nil
+	case TransportOci:
 		// oci:path:tag
 		if tag == "" {
 			return "", fmt.Errorf("empty tag: %q:%q:%q", transport, ref, tag)
 		}
-		return transport + ":" + ref + ":" + tag, nil
+		return string(transport) + ":" + ref + ":" + tag, nil
 	default:
 		return "", fmt.Errorf("unkonwn transport: %q:%q:%q", transport, ref, tag)
 	}
