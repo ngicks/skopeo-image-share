@@ -13,6 +13,55 @@ import (
 	"github.com/ngicks/skopeo-image-share/pkg/cli"
 )
 
+type Transport string
+
+const (
+	TransportDir               Transport = "dir"
+	TransportContainersStorage Transport = "containers-storage"
+	TransportDocker            Transport = "docker"
+	TransportDockerArchive     Transport = "docker-archive"
+	TransportOci               Transport = "oci"
+)
+
+type TransportRef struct {
+	Transport Transport
+	// ref for "containers-storage" and "docker", path for "dir", "docker-archive" and "oci"
+	Arg1 string
+	// tag for "oci", optional docker-reference for "docker-archive"
+	Arg2 string
+}
+
+// appendTransportRef appends ref to transport.
+// See https://github.com/containers/skopeo/blob/main/docs/skopeo.1.md#image-names
+func appendTransportRef(transport, ref, tag string) (string, error) {
+	if ref == "" {
+		return "", fmt.Errorf("empty ref: %q:%q:%q", transport, ref, tag)
+	}
+	switch transport {
+	case "containers-storage", "dir":
+		// containers-storage:docker-reference
+		// dir:path
+		return transport + ":" + ref, nil
+	case "docker":
+		// docker://docker-reference
+		return transport + "://" + ref, nil
+	case "docker-archive":
+		// docker-archive:path[:docker-reference]
+		if tag != "" {
+			return transport + ":" + ref + ":" + tag, nil
+		}
+		return transport + ":" + ref, nil
+	case "oci":
+		// oci:path:tag
+		if tag == "" {
+			return "", fmt.Errorf("empty tag: %q:%q:%q", transport, ref, tag)
+		}
+		return transport + ":" + ref + ":" + tag, nil
+	default:
+		return "", fmt.Errorf("unkonwn transport: %q:%q:%q", transport, ref, tag)
+	}
+}
+
 // Skopeo is a typed wrapper over the skopeo CLI.
 type Skopeo struct {
 	Runner cli.Runner
@@ -123,35 +172,4 @@ func (s *Skopeo) compressionArgs() []string {
 		args = append(args, "--dest-compress-level", strconv.Itoa(s.CompressionLevel))
 	}
 	return args
-}
-
-// appendTransportRef appends ref to transport.
-// See https://github.com/containers/skopeo/blob/main/docs/skopeo.1.md#image-names
-func appendTransportRef(transport, ref, tag string) (string, error) {
-	if ref == "" {
-		return "", fmt.Errorf("empty ref: %q:%q:%q", transport, ref, tag)
-	}
-	switch transport {
-	case "containers-storage", "dir":
-		// containers-storage:docker-reference
-		// dir:path
-		return transport + ":" + ref, nil
-	case "docker":
-		// docker://docker-reference
-		return transport + "://" + ref, nil
-	case "docker-archive":
-		// docker-archive:path[:docker-reference]
-		if tag != "" {
-			return transport + ":" + ref + ":" + tag, nil
-		}
-		return transport + ":" + ref, nil
-	case "oci":
-		// oci:path:tag
-		if tag == "" {
-			return "", fmt.Errorf("empty tag: %q:%q:%q", transport, ref, tag)
-		}
-		return transport + ":" + ref + ":" + tag, nil
-	default:
-		return "", fmt.Errorf("unkonwn transport: %q:%q:%q", transport, ref, tag)
-	}
 }
