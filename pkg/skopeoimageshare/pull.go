@@ -11,6 +11,8 @@ import (
 	"github.com/ngicks/go-common/contextkey"
 	"github.com/ngicks/skopeo-image-share/pkg/imageref"
 	"github.com/ngicks/skopeo-image-share/pkg/ocidir"
+	"github.com/opencontainers/go-digest"
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 // PullArgs configures one [Local.Pull] invocation. Mirror of [PushArgs]
@@ -178,16 +180,19 @@ func pullOne(
 	localTagDirRel := remoteTagDirRel
 	localShareAbs := localStore.ShareDir()
 
-	closure, sizes, err := dumpAndDeriveClosurePull(ctx, args, peer, ref, remoteTagDirAbs, remoteTagDirRel, remoteShareAbs, remoteShareRel)
+	mDesc, man, err := dumpAndDeriveClosurePull(ctx, args, peer, ref, remoteTagDirAbs, remoteTagDirRel, remoteShareAbs, remoteShareRel)
 	if err != nil {
 		rep.Err = fmt.Errorf("remote dump: %w", err)
 		return rep
 	}
 
-	pinned := NewDigestSet(closure.ManifestDigest, closure.ConfigDigest)
-	toFetch := Diff(closure.AllDigests(), localHas, pinned)
+	descs := ocidir.AllDescriptors(mDesc, man)
+	all := descriptorDigestSet(descs)
+	sizes := descriptorSizes(descs)
+	pinned := NewDigestSet(string(mDesc.Digest), string(man.Config.Digest))
+	toFetch := Diff(all, localHas, pinned)
 
-	for d := range closure.AllDigests() {
+	for d := range all {
 		if _, fetch := toFetch[d]; !fetch {
 			rep.Reused++
 		}
@@ -262,49 +267,43 @@ func dumpAndDeriveClosurePull(
 	peer Remote,
 	ref imageref.ImageRef,
 	tagDirAbs, tagDirRel, shareAbs, shareRel string,
-) (ocidir.Closure, map[string]int64, error) {
+) (v1.Descriptor, v1.Manifest, error) {
 	srcTransport := peer.Transport()
 	srcRef := ref.String()
 
 	if !args.DryRun {
 		if err := peer.FS().MkdirAll(tagDirRel, 0o755); err != nil {
-			return ocidir.Closure{}, nil, fmt.Errorf("mkdir %s: %w", tagDirRel, err)
+			return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("mkdir %s: %w", tagDirRel, err)
 		}
 		if err := peer.Skopeo().CopyToOCI(ctx, srcTransport, srcRef, tagDirAbs, srcRef, shareAbs); err != nil {
-			return ocidir.Closure{}, nil, fmt.Errorf("skopeo copy: %w", err)
+			return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("skopeo copy: %w", err)
 		}
 
-		c, err := ocidir.ReadClosure(fsBlobReader{fs: peer.FS()}, tagDirRel, shareRel)
+		mDesc, man, err := ocidir.ReadManifest(sharedDir{
+			fs:       peer.FS(),
+			dumpDir:  tagDirRel,
+			shareDir: shareRel,
+		})
 		if err != nil {
-			return ocidir.Closure{}, nil, fmt.Errorf("ocidir: %w", err)
+			return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("ocidir: %w", err)
 		}
-		sizes := blobSizes(peer.FS(), c)
-		return c, sizes, nil
+		return mDesc, man, nil
 	}
 
 	raw, err := peer.Skopeo().InspectRaw(ctx, srcTransport, srcRef)
 	if err != nil {
-		return ocidir.Closure{}, nil, fmt.Errorf("skopeo inspect --raw: %w", err)
+		return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("skopeo inspect --raw: %w", err)
 	}
 	man, err := ocidir.ParseManifest(raw)
 	if err != nil {
-		return ocidir.Closure{}, nil, fmt.Errorf("parse manifest: %w", err)
+		return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("parse manifest: %w", err)
 	}
-	c := ocidir.Closure{
-		ManifestDigest: ocidir.DigestBytes(raw),
-		ConfigDigest:   string(man.Config.Digest),
-		LayerDigests:   ocidir.LayerDigests(man),
+	mDesc := v1.Descriptor{
+		MediaType: man.MediaType,
+		Digest:    digest.Digest(ocidir.DigestBytes(raw)),
+		Size:      int64(len(raw)),
 	}
-	sizes := map[string]int64{c.ManifestDigest: int64(len(raw))}
-	if man.Config.Size > 0 {
-		sizes[c.ConfigDigest] = man.Config.Size
-	}
-	for _, l := range man.Layers {
-		if l.Size > 0 {
-			sizes[string(l.Digest)] = l.Size
-		}
-	}
-	return c, sizes, nil
+	return mDesc, man, nil
 }
 
 // SummaryLine returns the human-readable per-image summary string.

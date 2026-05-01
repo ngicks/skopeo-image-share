@@ -57,13 +57,24 @@ func TestSkopeo_InspectRawShared_Argv(t *testing.T) {
 	t.Parallel()
 	r := &stubRunner{}
 	s := New(r)
-	_, err := s.InspectRawShared(context.Background(), "/tmp/oci/_tags/v1", "/tmp/share")
+	_, err := s.InspectRawShared(context.Background(), "/tmp/oci/_tags/v1", "ghcr.io/a/b:c", "/tmp/share")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := [][]string{{"inspect", "--raw", "--shared-blob-dir", "/tmp/share", "oci:/tmp/oci/_tags/v1"}}
+	want := [][]string{{"inspect", "--raw", "--shared-blob-dir", "/tmp/share", "oci:/tmp/oci/_tags/v1:ghcr.io/a/b:c"}}
 	if !reflect.DeepEqual(r.got, want) {
 		t.Errorf("argv: got %v, want %v", r.got, want)
+	}
+}
+
+func TestSkopeo_InspectRawShared_RejectsEmptyDirOrRef(t *testing.T) {
+	t.Parallel()
+	s := New(&stubRunner{})
+	if _, err := s.InspectRawShared(context.Background(), "", "x:y", "/share"); err == nil {
+		t.Error("expected error for empty ociDir")
+	}
+	if _, err := s.InspectRawShared(context.Background(), "/dir", "", "/share"); err == nil {
+		t.Error("expected error for empty imageRef")
 	}
 }
 
@@ -78,7 +89,7 @@ func TestSkopeo_CopyToOCI_Argv(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := [][]string{{
-		"copy", "--preserve-digests",
+		"copy",
 		"--dest-shared-blob-dir", "/tmp/share",
 		"containers-storage:ghcr.io/a/b:c",
 		"oci:/tmp/oci/_tags/c:ghcr.io/a/b:c",
@@ -99,7 +110,7 @@ func TestSkopeo_CopyFromOCI_Argv(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := [][]string{{
-		"copy", "--preserve-digests",
+		"copy",
 		"--src-shared-blob-dir", "/tmp/share",
 		"oci:/tmp/oci/_tags/c:ghcr.io/a/b:c",
 		"containers-storage:ghcr.io/a/b:c",
@@ -137,7 +148,6 @@ func TestSkopeo_CompressionArgs(t *testing.T) {
 	s := New(r)
 	s.CompressionFormat = "zstd"
 	s.CompressionLevel = 19
-	s.ForceCompression = true
 	if err := s.CopyToOCI(context.Background(),
 		"containers-storage", "ghcr.io/a/b:c",
 		"/tmp/oci/_tags/c", "ghcr.io/a/b:c", "/tmp/share"); err != nil {
@@ -150,19 +160,17 @@ func TestSkopeo_CompressionArgs(t *testing.T) {
 	}
 	want := [][]string{
 		{
-			"copy", "--preserve-digests",
-			"--compression-format", "zstd",
-			"--compression-level", "19",
-			"--force-compression",
+			"copy",
+			"--dest-compress-format", "zstd",
+			"--dest-compress-level", "19",
 			"--dest-shared-blob-dir", "/tmp/share",
 			"containers-storage:ghcr.io/a/b:c",
 			"oci:/tmp/oci/_tags/c:ghcr.io/a/b:c",
 		},
 		{
-			"copy", "--preserve-digests",
-			"--compression-format", "zstd",
-			"--compression-level", "19",
-			"--force-compression",
+			"copy",
+			"--dest-compress-format", "zstd",
+			"--dest-compress-level", "19",
 			"--src-shared-blob-dir", "/tmp/share",
 			"oci:/tmp/oci/_tags/c:ghcr.io/a/b:c",
 			"containers-storage:ghcr.io/a/b:c",

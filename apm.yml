@@ -3,8 +3,10 @@ version: 1.0.0
 description: APM project for skopeo-image-share
 author: ngicks
 dependencies:
-  apm: 
-    - git: github.com/ngicks/dotfiles
-      path: agents/skills/scaffold-go-cobra
+  apm:
+  - git: github.com/ngicks/dotfiles
+    path: agents/skills/scaffold-go-cobra
+  - ngicks/agents-package/instructions/env.instructions.md
+  - ngicks/agents-package/instructions/go/base.instructions.md
   mcp: []
 scripts: {}

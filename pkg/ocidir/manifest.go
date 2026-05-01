@@ -1,8 +1,10 @@
 // Package ocidir parses on-disk OCI image-layout dumps. It exposes:
 //
 //   - [ParseManifest] / [ParseIndex] for raw JSON blobs;
-//   - [Closure] / [ReadClosure] / [BlobReader] for walking a dump dir
-//     plus its shared blob pool down to a digest closure;
+//   - [ReadManifest] / [BlobReader] for walking a dump dir plus its
+//     shared blob pool down to a manifest descriptor + body;
+//   - [AllDescriptors] for flattening the resulting (manifest, config,
+//     layers) into one slice;
 //   - [DigestBytes] / [SplitDigest] as small digest helpers.
 //
 // The package only knows about the on-disk layout — the
@@ -25,16 +27,6 @@ import (
 // so [ParseManifest] can recognize and reject Docker manifest lists
 // alongside [v1.MediaTypeImageIndex].
 const MediaTypeDockerList = "application/vnd.docker.distribution.manifest.list.v2+json"
-
-// LayerDigests returns the layer digests of m in order, as canonical
-// "sha256:<hex>" strings.
-func LayerDigests(m v1.Manifest) []string {
-	out := make([]string, 0, len(m.Layers))
-	for _, l := range m.Layers {
-		out = append(out, string(l.Digest))
-	}
-	return out
-}
 
 // ParseManifest decodes a single image manifest. It returns an error
 // for top-level index/list documents — those should be parsed as
@@ -67,19 +59,22 @@ func ParseManifest(data []byte) (v1.Manifest, error) {
 	return m, nil
 }
 
-// ParseIndex decodes an OCI image index / Docker manifest list.
-func ParseIndex(data []byte) (v1.Index, error) {
-	if len(data) == 0 {
-		return v1.Index{}, errors.New("index: empty input")
-	}
-	var idx v1.Index
-	if err := json.Unmarshal(data, &idx); err != nil {
-		return v1.Index{}, fmt.Errorf("index: %w", err)
-	}
+// ValidateIndex enforces the structural invariants we rely on: a
+// non-empty `manifests` array. JSON decoding is the caller's job.
+func ValidateIndex(idx v1.Index) error {
 	if len(idx.Manifests) == 0 {
-		return v1.Index{}, errors.New("index: empty .manifests[]")
+		return errors.New("index: empty .manifests[]")
 	}
-	return idx, nil
+	return nil
+}
+
+// ValidateImageLayout enforces the structural invariants we rely on:
+// a non-empty `imageLayoutVersion`. JSON decoding is the caller's job.
+func ValidateImageLayout(l v1.ImageLayout) error {
+	if l.Version == "" {
+		return errors.New("layout: missing imageLayoutVersion")
+	}
+	return nil
 }
 
 // DigestBytes returns the sha256 digest of b in `sha256:<hex>` form.

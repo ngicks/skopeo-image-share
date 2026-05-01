@@ -14,6 +14,8 @@ import (
 	"github.com/ngicks/skopeo-image-share/pkg/cli"
 	"github.com/ngicks/skopeo-image-share/pkg/imageref"
 	"github.com/ngicks/skopeo-image-share/pkg/ocidir"
+	"github.com/opencontainers/go-digest"
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 // PushArgs configures one [Local.Push] invocation. Flags surfaced via
@@ -211,16 +213,19 @@ func pushOne(
 	remoteTagDirRel := tagDirRel
 	remoteShareAbs := filepath.ToSlash(remoteStore.ShareDir())
 
-	closure, sizes, err := dumpAndDeriveClosurePush(ctx, args, local, ref, tagDirAbs, tagDirRel, localShareAbs, localShareRel)
+	mDesc, man, err := dumpAndDeriveClosurePush(ctx, args, local, ref, tagDirAbs, tagDirRel, localShareAbs, localShareRel)
 	if err != nil {
 		rep.Err = fmt.Errorf("dump: %w", err)
 		return rep
 	}
 
-	pinned := NewDigestSet(closure.ManifestDigest, closure.ConfigDigest)
-	toSend := Diff(closure.AllDigests(), remoteHas, pinned)
+	descs := ocidir.AllDescriptors(mDesc, man)
+	all := descriptorDigestSet(descs)
+	sizes := descriptorSizes(descs)
+	pinned := NewDigestSet(string(mDesc.Digest), string(man.Config.Digest))
+	toSend := Diff(all, remoteHas, pinned)
 
-	for d := range closure.AllDigests() {
+	for d := range all {
 		if _, send := toSend[d]; !send {
 			rep.Reused++
 		}
@@ -292,71 +297,72 @@ func pushOne(
 }
 
 // dumpAndDeriveClosurePush runs `skopeo copy ... oci:<tagDir>` (or, on
-// --dry-run, `skopeo inspect --raw`) and returns the digest closure
-// plus a digest→size map for the toSend ordering.
+// --dry-run, `skopeo inspect --raw`) and returns the manifest
+// descriptor + parsed manifest body. Use [ocidir.AllDescriptors] on
+// the result to obtain the closure.
 func dumpAndDeriveClosurePush(
 	ctx context.Context,
 	args PushArgs,
 	local *Local,
 	ref imageref.ImageRef,
 	tagDirAbs, tagDirRel, localShareAbs, localShareRel string,
-) (ocidir.Closure, map[string]int64, error) {
+) (v1.Descriptor, v1.Manifest, error) {
 	srcTransport := local.transport
 	srcRef := ref.String()
 
 	if !args.DryRun {
 		if err := local.fs.MkdirAll(tagDirRel, 0o755); err != nil {
-			return ocidir.Closure{}, nil, fmt.Errorf("mkdir %s: %w", tagDirRel, err)
+			return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("mkdir %s: %w", tagDirRel, err)
 		}
 		if err := local.skopeoCli.CopyToOCI(ctx, srcTransport, srcRef, tagDirAbs, srcRef, localShareAbs); err != nil {
-			return ocidir.Closure{}, nil, fmt.Errorf("skopeo copy: %w", err)
+			return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("skopeo copy: %w", err)
 		}
 
-		c, err := ocidir.ReadClosure(fsBlobReader{fs: local.fs}, tagDirRel, localShareRel)
+		mDesc, man, err := ocidir.ReadManifest(sharedDir{
+			fs:       local.fs,
+			dumpDir:  tagDirRel,
+			shareDir: localShareRel,
+		})
 		if err != nil {
-			return ocidir.Closure{}, nil, fmt.Errorf("ocidir: %w", err)
+			return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("ocidir: %w", err)
 		}
-		sizes := blobSizes(local.fs, c)
-		return c, sizes, nil
+		return mDesc, man, nil
 	}
 
 	raw, err := local.skopeoCli.InspectRaw(ctx, srcTransport, srcRef)
 	if err != nil {
-		return ocidir.Closure{}, nil, fmt.Errorf("skopeo inspect --raw: %w", err)
+		return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("skopeo inspect --raw: %w", err)
 	}
 	man, err := ocidir.ParseManifest(raw)
 	if err != nil {
-		return ocidir.Closure{}, nil, fmt.Errorf("parse manifest: %w", err)
+		return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("parse manifest: %w", err)
 	}
-	c := ocidir.Closure{
-		ManifestDigest: ocidir.DigestBytes(raw),
-		ConfigDigest:   string(man.Config.Digest),
-		LayerDigests:   ocidir.LayerDigests(man),
+	mDesc := v1.Descriptor{
+		MediaType: man.MediaType,
+		Digest:    digest.Digest(ocidir.DigestBytes(raw)),
+		Size:      int64(len(raw)),
 	}
-	sizes := map[string]int64{c.ManifestDigest: int64(len(raw))}
-	if man.Config.Size > 0 {
-		sizes[c.ConfigDigest] = man.Config.Size
-	}
-	for _, l := range man.Layers {
-		if l.Size > 0 {
-			sizes[string(l.Digest)] = l.Size
-		}
-	}
-	return c, sizes, nil
+	return mDesc, man, nil
 }
 
-// blobSizes returns size for every digest in c.AllDigests() found
-// under the FS's share/ directory (relative path). Missing blobs are
-// assigned size 0.
-func blobSizes(fs FS, c ocidir.Closure) map[string]int64 {
-	out := make(map[string]int64)
-	for d := range c.AllDigests() {
-		p, err := RelBlobPath(d)
-		if err != nil {
-			continue
-		}
-		if size, ok, err := statSize(fs, p); err == nil && ok {
-			out[d] = size
+// descriptorDigestSet returns the [DigestSet] of every descriptor's
+// digest.
+func descriptorDigestSet(descs []v1.Descriptor) DigestSet {
+	out := NewDigestSet()
+	for _, d := range descs {
+		out.Add(string(d.Digest))
+	}
+	return out
+}
+
+// descriptorSizes returns the digest→size map for every descriptor
+// with a non-zero Size. Descriptors with Size == 0 are omitted (size
+// is not authoritative for them).
+func descriptorSizes(descs []v1.Descriptor) map[string]int64 {
+	out := make(map[string]int64, len(descs))
+	for _, d := range descs {
+		if d.Size > 0 {
+			out[string(d.Digest)] = d.Size
 		}
 	}
 	return out

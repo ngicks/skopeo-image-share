@@ -2,6 +2,26 @@ lockfile_version: '1'
 generated_at: '2026-04-25T12:12:05.473317+00:00'
 apm_version: 0.9.0
 dependencies:
+- repo_url: ngicks/agents-package
+  host: github.com
+  virtual_path: instructions/env.instructions.md
+  is_virtual: true
+  package_type: apm_package
+  deployed_files:
+  - .claude/rules/env.md
+  deployed_file_hashes:
+    .claude/rules/env.md: sha256:f153659eaee224ae2ca5730291638afe2880ee197b5ab1d00c83131fdf62039a
+  content_hash: sha256:0bbd56e7b9abedfab64344327152a7cc37f363209aefd10870dccd627f80fd83
+- repo_url: ngicks/agents-package
+  host: github.com
+  virtual_path: instructions/go/base.instructions.md
+  is_virtual: true
+  package_type: apm_package
+  deployed_files:
+  - .claude/rules/base.md
+  deployed_file_hashes:
+    .claude/rules/base.md: sha256:f5a127ec1741aeed528e2f6df2a17866a408c2f8c8427bbaeb06fc80cb8b2284
+  content_hash: sha256:1d7588e243881a514eb45af4f4b75bf41a968d2b9a4a3fe8d51722b9d7702971
 - repo_url: ngicks/dotfiles
   host: github.com
   resolved_commit: 32158e61ab1f9fecf3675cc16e8113dc3701a9a2

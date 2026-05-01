@@ -3,6 +3,8 @@ package ocidir
 import (
 	"strings"
 	"testing"
+
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 const ociManifestFixture = `{
@@ -66,8 +68,8 @@ func TestParseManifest_OCI(t *testing.T) {
 	if string(m.Config.Digest) != "sha256:"+strings.Repeat("1", 64) {
 		t.Errorf("config digest = %q", m.Config.Digest)
 	}
-	if got := LayerDigests(m); len(got) != 2 {
-		t.Errorf("got %d layers, want 2", len(got))
+	if got := len(m.Layers); got != 2 {
+		t.Errorf("got %d layers, want 2", got)
 	}
 }
 
@@ -80,8 +82,8 @@ func TestParseManifest_Docker(t *testing.T) {
 	if string(m.Config.Digest) != "sha256:"+strings.Repeat("2", 64) {
 		t.Errorf("config digest = %q", m.Config.Digest)
 	}
-	if got := LayerDigests(m); len(got) != 1 {
-		t.Errorf("got %d layers, want 1", len(got))
+	if got := len(m.Layers); got != 1 {
+		t.Errorf("got %d layers, want 1", got)
 	}
 }
 
@@ -107,25 +109,17 @@ func TestParseManifest_MissingConfigDigest(t *testing.T) {
 	}
 }
 
-func TestParseIndex_OK(t *testing.T) {
+func TestValidateIndex_Empty(t *testing.T) {
 	t.Parallel()
-	idx, err := ParseIndex([]byte(ociIndexFixture))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(idx.Manifests) != 1 {
-		t.Fatalf("got %d manifests", len(idx.Manifests))
-	}
-	if string(idx.Manifests[0].Digest) != "sha256:"+strings.Repeat("d", 64) {
-		t.Errorf("manifest digest = %q", idx.Manifests[0].Digest)
+	if err := ValidateIndex(v1.Index{}); err == nil {
+		t.Fatal("expected error for empty manifests")
 	}
 }
 
-func TestParseIndex_Empty(t *testing.T) {
+func TestValidateImageLayout_MissingVersion(t *testing.T) {
 	t.Parallel()
-	_, err := ParseIndex([]byte(`{"schemaVersion":2,"manifests":[]}`))
-	if err == nil {
-		t.Fatal("expected error for empty manifests")
+	if err := ValidateImageLayout(v1.ImageLayout{}); err == nil {
+		t.Fatal("expected error for missing version")
 	}
 }
 

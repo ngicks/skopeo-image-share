@@ -39,3 +39,4 @@ apm_modules/
 
 
 /pkg/ocidir/testdata/
+/internal/testdata/ocidir/

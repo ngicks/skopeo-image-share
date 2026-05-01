@@ -2,6 +2,7 @@ package skopeoimageshare
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -12,6 +13,7 @@ import (
 	"github.com/ngicks/go-common/contextkey"
 	"github.com/ngicks/skopeo-image-share/pkg/ocidir"
 	"github.com/opencontainers/go-digest"
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 // Transport names recognized by [Enumerate].
@@ -129,8 +131,8 @@ func enumerateViaSkopeoInspect(ctx context.Context, cfg EnumerateConfig, lister 
 		}
 		out.Add(ocidir.DigestBytes(raw))
 		out.Add(string(man.Config.Digest))
-		for _, l := range ocidir.LayerDigests(man) {
-			out.Add(l)
+		for _, l := range man.Layers {
+			out.Add(string(l.Digest))
 		}
 	}
 
@@ -159,12 +161,15 @@ func enumerateOCI(ctx context.Context, cfg EnumerateConfig) (DigestSet, error) {
 	}
 
 	logger := contextkey.ValueSlogLoggerDefault(ctx)
-	reader := fsBlobReader{fs: cfg.FS}
 	for _, d := range dumps {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		c, err := ocidir.ReadClosure(reader, d, "share")
+		mDesc, man, err := ocidir.ReadManifest(sharedDir{
+			fs:       cfg.FS,
+			dumpDir:  d,
+			shareDir: "share",
+		})
 		if err != nil {
 			logger.LogAttrs(ctx, slog.LevelWarn, "enumerate.oci.closure.skip",
 				slog.String("dump", d),
@@ -172,8 +177,8 @@ func enumerateOCI(ctx context.Context, cfg EnumerateConfig) (DigestSet, error) {
 			)
 			continue
 		}
-		for d := range c.AllDigests() {
-			out.Add(d)
+		for _, desc := range ocidir.AllDescriptors(mDesc, man) {
+			out.Add(string(desc.Digest))
 		}
 	}
 
@@ -183,20 +188,54 @@ func enumerateOCI(ctx context.Context, cfg EnumerateConfig) (DigestSet, error) {
 	return out, nil
 }
 
-// fsBlobReader adapts an [FS] to [ocidir.BlobReader].
-type fsBlobReader struct{ fs FS }
-
-func (b fsBlobReader) ReadIndexJSON(dumpDir string) ([]byte, error) {
-	return readAllVia(b.fs, path.Join(dumpDir, "index.json"))
+// sharedDir is a [ocidir.DirV1] over a single base-rooted [FS] with
+// FS-relative dumpDir + shareDir paths. Used by the orchestrator
+// because SFTP-backed FSes can't be cheaply sub-rooted; the public
+// [ocidir.SharedFsDir] (which composes a [ocidir.DirV1] + a separate
+// [vroot.Fs]) is the right shape when sub-FSes are easy.
+type sharedDir struct {
+	fs       FS
+	dumpDir  string
+	shareDir string
 }
-func (b fsBlobReader) ReadBlob(shareDir, d string) ([]byte, error) {
-	algo, hex, err := ocidir.SplitDigest(d)
+
+func (d sharedDir) Index() (v1.Index, error) {
+	data, err := readAllVia(d.fs, path.Join(d.dumpDir, "index.json"))
+	if err != nil {
+		return v1.Index{}, fmt.Errorf("ocidir: read index.json: %w", err)
+	}
+	var idx v1.Index
+	if err := json.Unmarshal(data, &idx); err != nil {
+		return v1.Index{}, fmt.Errorf("ocidir: parse index.json: %w", err)
+	}
+	if err := ocidir.ValidateIndex(idx); err != nil {
+		return v1.Index{}, fmt.Errorf("ocidir: %w", err)
+	}
+	return idx, nil
+}
+
+func (d sharedDir) ImageLayout() (v1.ImageLayout, error) {
+	data, err := readAllVia(d.fs, path.Join(d.dumpDir, v1.ImageLayoutFile))
+	if err != nil {
+		return v1.ImageLayout{}, fmt.Errorf("ocidir: read %s: %w", v1.ImageLayoutFile, err)
+	}
+	var l v1.ImageLayout
+	if err := json.Unmarshal(data, &l); err != nil {
+		return v1.ImageLayout{}, fmt.Errorf("ocidir: parse %s: %w", v1.ImageLayoutFile, err)
+	}
+	if err := ocidir.ValidateImageLayout(l); err != nil {
+		return v1.ImageLayout{}, fmt.Errorf("ocidir: %w", err)
+	}
+	return l, nil
+}
+
+func (d sharedDir) Blob(dg digest.Digest) ([]byte, error) {
+	algo, hex, err := ocidir.SplitDigest(string(dg))
 	if err != nil {
 		return nil, err
 	}
-	data, err := readAllVia(b.fs, path.Join(shareDir, algo, hex))
+	data, err := readAllVia(d.fs, path.Join(d.shareDir, algo, hex))
 	if err != nil {
-		// translate fs not-exist to os.ErrNotExist so callers can use errors.Is
 		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, os.ErrNotExist) {
 			return nil, os.ErrNotExist
 		}
