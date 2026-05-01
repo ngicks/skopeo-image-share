@@ -3,6 +3,7 @@ package commands
 import (
 	"fmt"
 
+	"github.com/ngicks/skopeo-image-share/pkg/cli/skopeo"
 	"github.com/ngicks/skopeo-image-share/pkg/imageref"
 	"github.com/ngicks/skopeo-image-share/pkg/skopeoimageshare"
 	"github.com/spf13/cobra"
@@ -43,7 +44,7 @@ func runDump(cmd *cobra.Command, args []string) error {
 
 	local, err := skopeoimageshare.NewLocal(ctx, skopeoimageshare.LocalConfig{
 		BaseDir:   dumpFlags.dataDir,
-		Transport: dumpFlags.localTransport,
+		Transport: skopeo.Transport(dumpFlags.localTransport),
 		OCIPath:   dumpFlags.localPath,
 	})
 	if err != nil {

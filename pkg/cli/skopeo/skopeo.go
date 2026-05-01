@@ -136,6 +136,11 @@ func (s *Skopeo) Copy(ctx context.Context, src, dst TransportRef, sharedBlobDir 
 	if err != nil {
 		return err
 	}
+
+	if srcStr == dstStr {
+		return fmt.Errorf("src and dst is same: %q", srcStr)
+	}
+
 	argv := []string{"copy"}
 	argv = append(argv, s.compressionArgs()...)
 	if sharedBlobDir != "" {

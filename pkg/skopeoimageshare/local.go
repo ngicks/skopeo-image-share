@@ -20,7 +20,7 @@ import (
 // (typically the SSH-backed implementation from [NewRemote]).
 type Local struct {
 	baseDir   string
-	transport string
+	transport skopeo.Transport
 	ociPath   string
 
 	skopeoCli SkopeoLike
@@ -34,12 +34,12 @@ type Local struct {
 // LocalConfig configures [NewLocal].
 //
 //   - BaseDir is optional; an empty value falls back to [DefaultBaseDir].
-//   - Transport is required: one of [TransportContainersStorage],
-//     [TransportDockerDaemon], or [TransportOCI].
-//   - OCIPath is required when Transport == [TransportOCI].
+//   - Transport is required: one of [skopeo.TransportContainersStorage],
+//     [skopeo.TransportDockerDaemon], or [skopeo.TransportOci].
+//   - OCIPath is required when Transport == [skopeo.TransportOci].
 type LocalConfig struct {
 	BaseDir   string
-	Transport string
+	Transport skopeo.Transport
 	OCIPath   string
 }
 
@@ -74,9 +74,9 @@ func NewLocal(ctx context.Context, cfg LocalConfig) (*Local, error) {
 		fs:        fs,
 	}
 	switch cfg.Transport {
-	case TransportContainersStorage:
+	case skopeo.TransportContainersStorage:
 		l.lister = docker.NewPodman(cli.NewLocalRunner("podman"))
-	case TransportDockerDaemon:
+	case skopeo.TransportDockerDaemon:
 		l.lister = docker.NewDocker(cli.NewLocalRunner("docker"))
 	}
 	return l, nil
@@ -86,10 +86,10 @@ func NewLocal(ctx context.Context, cfg LocalConfig) (*Local, error) {
 func (l *Local) BaseDir() string { return l.baseDir }
 
 // Transport returns the canonical local transport.
-func (l *Local) Transport() string { return l.transport }
+func (l *Local) Transport() skopeo.Transport { return l.transport }
 
 // OCIPath returns the configured `oci:<dir>` path (only meaningful
-// when Transport == [TransportOCI]).
+// when Transport == [skopeo.TransportOci]).
 func (l *Local) OCIPath() string { return l.ociPath }
 
 // Skopeo returns the local skopeo wrapper.
@@ -99,7 +99,7 @@ func (l *Local) Skopeo() SkopeoLike { return l.skopeoCli }
 func (l *Local) FS() FS { return l.fs }
 
 // Lister returns the local docker / podman wrapper, or nil for
-// [TransportOCI].
+// [skopeo.TransportOci].
 func (l *Local) Lister() Lister { return l.lister }
 
 // Validate runs sanity checks against the local environment — at the
@@ -136,7 +136,7 @@ func (l *Local) Dump(ctx context.Context, ref imageref.ImageRef) (string, error)
 		return "", fmt.Errorf("dump: mkdir %s: %w", tagDirRel, err)
 	}
 	if err := l.skopeoCli.Copy(ctx,
-		skopeo.TransportRef{Transport: skopeo.Transport(l.transport), Arg1: ref.String()},
+		skopeo.TransportRef{Transport: l.transport, Arg1: ref.String()},
 		skopeo.TransportRef{Transport: skopeo.TransportOci, Arg1: tagDirAbs, Arg2: ref.String()},
 		store.ShareDir(),
 	); err != nil {

@@ -38,18 +38,18 @@ type Remote interface {
 	// BaseDir is the absolute path of the peer's data dir
 	// (`<base>` in the on-disk layout described under [Store]).
 	BaseDir() string
-	// Transport is one of [TransportContainersStorage],
-	// [TransportDockerDaemon], or [TransportOCI].
-	Transport() string
+	// Transport is one of [skopeo.TransportContainersStorage],
+	// [skopeo.TransportDockerDaemon], or [skopeo.TransportOci].
+	Transport() skopeo.Transport
 	// OCIPath is the path passed via `oci:<dir>`; only meaningful when
-	// Transport == [TransportOCI].
+	// Transport == [skopeo.TransportOci].
 	OCIPath() string
 	// Skopeo is the skopeo wrapper bound to this peer.
 	Skopeo() SkopeoLike
 	// FS is rooted at BaseDir; orchestrator-facing paths are FS-relative.
 	FS() FS
 	// Lister is the docker / podman wrapper for live image
-	// enumeration. Returns nil for [TransportOCI].
+	// enumeration. Returns nil for [skopeo.TransportOci].
 	Lister() Lister
 	// ReadOnly reports whether mutating operations targeting this peer
 	// should be rejected.
@@ -74,12 +74,12 @@ type Remote interface {
 // RemoteConfig configures [NewRemote].
 //
 //   - Target is the SSH destination (required).
-//   - Transport is required: one of [TransportContainersStorage],
-//     [TransportDockerDaemon], or [TransportOCI].
-//   - OCIPath is required when Transport == [TransportOCI].
+//   - Transport is required: one of [skopeo.TransportContainersStorage],
+//     [skopeo.TransportDockerDaemon], or [skopeo.TransportOci].
+//   - OCIPath is required when Transport == [skopeo.TransportOci].
 type RemoteConfig struct {
 	Target    ssh.Target
-	Transport string
+	Transport skopeo.Transport
 	OCIPath   string
 }
 
@@ -91,7 +91,7 @@ var _ Remote = (*sshRemote)(nil)
 // ProxyCommand etc. flow through the user's ssh config.
 type sshRemote struct {
 	baseDir   string
-	transport string
+	transport skopeo.Transport
 	ociPath   string
 
 	target ssh.Target
@@ -157,9 +157,9 @@ func NewRemote(ctx context.Context, cfg RemoteConfig) (Remote, error) {
 	r.fs = sftpfs.New(sftpC, base)
 	r.skopeoCli = &skopeo.Skopeo{Runner: cli.NewSshRunner(cfg.Target, "skopeo")}
 	switch cfg.Transport {
-	case TransportContainersStorage:
+	case skopeo.TransportContainersStorage:
 		r.lister = docker.NewPodman(cli.NewSshRunner(cfg.Target, "podman"))
-	case TransportDockerDaemon:
+	case skopeo.TransportDockerDaemon:
 		r.lister = docker.NewDocker(cli.NewSshRunner(cfg.Target, "docker"))
 	}
 	return r, nil
@@ -284,7 +284,7 @@ func (r *sshRemote) resolveBaseDir(ctx context.Context) (string, error) {
 func (r *sshRemote) BaseDir() string { return r.baseDir }
 
 // Transport implements [Remote].
-func (r *sshRemote) Transport() string { return r.transport }
+func (r *sshRemote) Transport() skopeo.Transport { return r.transport }
 
 // OCIPath implements [Remote].
 func (r *sshRemote) OCIPath() string { return r.ociPath }
@@ -330,7 +330,7 @@ func (r *sshRemote) List(ctx context.Context) (DigestSet, error) {
 // [Local.Dump] but slash-normalizes the absolute paths handed to the
 // remote skopeo CLI (peer's filesystem is POSIX even when the host
 // running this binary is not).
-func dumpRemote(ctx context.Context, transport, baseDir string, sk SkopeoLike, fs FS, ref imageref.ImageRef) (string, error) {
+func dumpRemote(ctx context.Context, transport skopeo.Transport, baseDir string, sk SkopeoLike, fs FS, ref imageref.ImageRef) (string, error) {
 	store := NewStore(baseDir)
 	tagDirNative, err := store.DumpDir(ref)
 	if err != nil {
@@ -346,7 +346,7 @@ func dumpRemote(ctx context.Context, transport, baseDir string, sk SkopeoLike, f
 		return "", fmt.Errorf("dump: mkdir %s: %w", tagDirRel, err)
 	}
 	if err := sk.Copy(ctx,
-		skopeo.TransportRef{Transport: skopeo.Transport(transport), Arg1: ref.String()},
+		skopeo.TransportRef{Transport: transport, Arg1: ref.String()},
 		skopeo.TransportRef{Transport: skopeo.TransportOci, Arg1: tagDirAbs, Arg2: ref.String()},
 		shareAbs,
 	); err != nil {
@@ -356,7 +356,7 @@ func dumpRemote(ctx context.Context, transport, baseDir string, sk SkopeoLike, f
 }
 
 // listAt dispatches to [Enumerate] using the right lister for transport.
-func listAt(ctx context.Context, transport string, sk SkopeoLike, fs FS, baseDir string, lister Lister) (DigestSet, error) {
+func listAt(ctx context.Context, transport skopeo.Transport, sk SkopeoLike, fs FS, baseDir string, lister Lister) (DigestSet, error) {
 	cfg := EnumerateConfig{
 		Transport: transport,
 		Skopeo:    sk,
@@ -364,9 +364,9 @@ func listAt(ctx context.Context, transport string, sk SkopeoLike, fs FS, baseDir
 		BaseDir:   baseDir,
 	}
 	switch transport {
-	case TransportContainersStorage:
+	case skopeo.TransportContainersStorage:
 		cfg.Podman = lister
-	case TransportDockerDaemon:
+	case skopeo.TransportDockerDaemon:
 		cfg.Docker = lister
 	}
 	return Enumerate(ctx, cfg)

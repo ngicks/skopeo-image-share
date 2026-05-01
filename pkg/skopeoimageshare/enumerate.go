@@ -17,13 +17,6 @@ import (
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
-// Transport names recognized by [Enumerate].
-const (
-	TransportContainersStorage = "containers-storage"
-	TransportDockerDaemon      = "docker-daemon"
-	TransportOCI               = "oci"
-)
-
 // SkopeoInspector is the [Skopeo] subset used by enumeration. The
 // interface lets tests substitute a fake without spinning up a fake
 // skopeo on $PATH.
@@ -43,9 +36,10 @@ type DockerLister interface {
 
 // EnumerateConfig is the bundle of inputs to [Enumerate].
 type EnumerateConfig struct {
-	// Transport selects the enumerator. One of [TransportContainersStorage],
-	// [TransportDockerDaemon], or [TransportOCI].
-	Transport string
+	// Transport selects the enumerator. One of
+	// [skopeo.TransportContainersStorage], [skopeo.TransportDockerDaemon],
+	// or [skopeo.TransportOci].
+	Transport skopeo.Transport
 
 	// Skopeo is required for containers-storage / docker-daemon to
 	// turn refs into manifests.
@@ -57,9 +51,9 @@ type EnumerateConfig struct {
 	// Docker is required when Transport == docker-daemon.
 	Docker DockerLister
 
-	// FS is the filesystem holding the share/ pool (for all three
+	// Fs is the filesystem holding the share/ pool (for all three
 	// transports) and, for OCI, the layout root rooted at BaseDir.
-	FS FS
+	Fs Fs
 
 	// BaseDir is the application's data dir on this side
 	// (`<base>` from PLAN §3). The enumerator unions
@@ -73,11 +67,11 @@ type EnumerateConfig struct {
 // `<peer-base>/share/`.
 func Enumerate(ctx context.Context, cfg EnumerateConfig) (DigestSet, error) {
 	switch cfg.Transport {
-	case TransportContainersStorage:
-		return enumerateViaSkopeoInspect(ctx, cfg, cfg.Podman, "containers-storage")
-	case TransportDockerDaemon:
-		return enumerateViaSkopeoInspect(ctx, cfg, cfg.Docker, "docker-daemon")
-	case TransportOCI:
+	case skopeo.TransportContainersStorage:
+		return enumerateViaSkopeoInspect(ctx, cfg, cfg.Podman, skopeo.TransportContainersStorage)
+	case skopeo.TransportDockerDaemon:
+		return enumerateViaSkopeoInspect(ctx, cfg, cfg.Docker, skopeo.TransportDockerDaemon)
+	case skopeo.TransportOci:
 		return enumerateOCI(ctx, cfg)
 	default:
 		return nil, fmt.Errorf("enumerate: unsupported transport %q", cfg.Transport)
@@ -92,7 +86,7 @@ type Lister interface {
 	ImageLs(ctx context.Context) ([]string, error)
 }
 
-func enumerateViaSkopeoInspect(ctx context.Context, cfg EnumerateConfig, lister Lister, transport string) (DigestSet, error) {
+func enumerateViaSkopeoInspect(ctx context.Context, cfg EnumerateConfig, lister Lister, transport skopeo.Transport) (DigestSet, error) {
 	if lister == nil {
 		return nil, fmt.Errorf("enumerate %s: missing lister", transport)
 	}
@@ -113,12 +107,12 @@ func enumerateViaSkopeoInspect(ctx context.Context, cfg EnumerateConfig, lister 
 			return nil, err
 		}
 		raw, err := cfg.Skopeo.InspectRaw(ctx, skopeo.TransportRef{
-			Transport: skopeo.Transport(transport),
+			Transport: transport,
 			Arg1:      ref,
 		})
 		if err != nil {
 			logger.LogAttrs(ctx, slog.LevelWarn, "enumerate.inspect.skip",
-				slog.String("transport", transport),
+				slog.String("transport", string(transport)),
 				slog.String("ref", ref),
 				slog.Any("err", err),
 			)
@@ -127,7 +121,7 @@ func enumerateViaSkopeoInspect(ctx context.Context, cfg EnumerateConfig, lister 
 		man, err := ocidir.ParseManifest(raw)
 		if err != nil {
 			logger.LogAttrs(ctx, slog.LevelWarn, "enumerate.parse.skip",
-				slog.String("transport", transport),
+				slog.String("transport", string(transport)),
 				slog.String("ref", ref),
 				slog.Any("err", err),
 			)
@@ -140,8 +134,8 @@ func enumerateViaSkopeoInspect(ctx context.Context, cfg EnumerateConfig, lister 
 		}
 	}
 
-	if cfg.FS != nil {
-		if err := unionShareInventory(out, cfg.FS, "share"); err != nil {
+	if cfg.Fs != nil {
+		if err := unionShareInventory(out, cfg.Fs, "share"); err != nil {
 			return nil, fmt.Errorf("enumerate %s: share/ inventory: %w", transport, err)
 		}
 	}
@@ -153,13 +147,13 @@ func enumerateViaSkopeoInspect(ctx context.Context, cfg EnumerateConfig, lister 
 // the closure walker on every tag/digest dump found, and unions the
 // share pool's filename set.
 func enumerateOCI(ctx context.Context, cfg EnumerateConfig) (DigestSet, error) {
-	if cfg.FS == nil {
+	if cfg.Fs == nil {
 		return nil, errors.New("enumerate oci: nil FS")
 	}
 
 	out := NewDigestSet()
 
-	dumps, err := walkDumpDirs(cfg.FS, ".")
+	dumps, err := walkDumpDirs(cfg.Fs, ".")
 	if err != nil {
 		return nil, fmt.Errorf("enumerate oci: walk: %w", err)
 	}
@@ -170,7 +164,7 @@ func enumerateOCI(ctx context.Context, cfg EnumerateConfig) (DigestSet, error) {
 			return nil, err
 		}
 		mDesc, man, err := ocidir.ReadManifest(sharedDir{
-			fs:       cfg.FS,
+			fs:       cfg.Fs,
 			dumpDir:  d,
 			shareDir: "share",
 		})
@@ -186,19 +180,19 @@ func enumerateOCI(ctx context.Context, cfg EnumerateConfig) (DigestSet, error) {
 		}
 	}
 
-	if err := unionShareInventory(out, cfg.FS, "share"); err != nil {
+	if err := unionShareInventory(out, cfg.Fs, "share"); err != nil {
 		return nil, fmt.Errorf("enumerate oci: share/ inventory: %w", err)
 	}
 	return out, nil
 }
 
-// sharedDir is a [ocidir.DirV1] over a single base-rooted [FS] with
+// sharedDir is a [ocidir.DirV1] over a single base-rooted [Fs] with
 // FS-relative dumpDir + shareDir paths. Used by the orchestrator
 // because SFTP-backed FSes can't be cheaply sub-rooted; the public
 // [ocidir.SharedFsDir] (which composes a [ocidir.DirV1] + a separate
 // [vroot.Fs]) is the right shape when sub-FSes are easy.
 type sharedDir struct {
-	fs       FS
+	fs       Fs
 	dumpDir  string
 	shareDir string
 }
@@ -251,7 +245,7 @@ func (d sharedDir) Blob(dg digest.Digest) ([]byte, error) {
 // walkDumpDirs walks the FS root listing immediate children, then
 // for each non-reserved child recurses looking for `_tags`/`_digests`
 // marker dirs. The returned paths are FS-relative leaf dump dirs.
-func walkDumpDirs(fs FS, root string) ([]string, error) {
+func walkDumpDirs(fs Fs, root string) ([]string, error) {
 	hosts, err := readDirVia(fs, root)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) || errors.Is(err, fs2NotExist) {
@@ -284,7 +278,7 @@ func walkDumpDirs(fs FS, root string) ([]string, error) {
 // walkRepoTree recursively descends dir, treating any direct child
 // named `_tags` or `_digests` as a marker dir whose own children are
 // dump leaves.
-func walkRepoTree(fs FS, dir string, out *[]string) error {
+func walkRepoTree(fs Fs, dir string, out *[]string) error {
 	entries, err := readDirVia(fs, dir)
 	if err != nil {
 		return err
@@ -321,7 +315,7 @@ var fs2NotExist = fs.ErrNotExist
 
 // unionShareInventory adds every blob found under shareDir/sha256/ to
 // dst. Missing share/ is treated as empty inventory.
-func unionShareInventory(dst DigestSet, f FS, shareDir string) error {
+func unionShareInventory(dst DigestSet, f Fs, shareDir string) error {
 	algoDir := path.Join(shareDir, "sha256")
 	if _, ok, err := statSize(f, algoDir); err != nil {
 		return err
@@ -347,4 +341,3 @@ func unionShareInventory(dst DigestSet, f FS, shareDir string) error {
 	}
 	return nil
 }
-

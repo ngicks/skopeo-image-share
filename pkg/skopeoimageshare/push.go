@@ -286,7 +286,7 @@ func pushOne(
 	if !args.DryRun {
 		if err := peer.Skopeo().Copy(ctx,
 			skopeo.TransportRef{Transport: skopeo.TransportOci, Arg1: remoteTagDirAbs, Arg2: ref.String()},
-			skopeo.TransportRef{Transport: skopeo.Transport(peer.Transport()), Arg1: ref.String()},
+			skopeo.TransportRef{Transport: peer.Transport(), Arg1: ref.String()},
 			remoteShareAbs,
 		); err != nil {
 			rep.Err = fmt.Errorf("remote load: %w", err)
@@ -312,7 +312,7 @@ func dumpAndDeriveClosurePush(
 	tagDirAbs, tagDirRel, localShareAbs, localShareRel string,
 ) (v1.Descriptor, v1.Manifest, error) {
 	src := skopeo.TransportRef{
-		Transport: skopeo.Transport(local.transport),
+		Transport: local.transport,
 		Arg1:      ref.String(),
 	}
 

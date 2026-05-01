@@ -61,7 +61,7 @@ func (s *recordingSkopeo) Copy(ctx context.Context, src, dst skopeo.TransportRef
 // flag.
 type fakeRemote struct {
 	baseDir   string
-	transport string
+	transport skopeo.Transport
 	ociPath   string
 	readOnly  bool
 	skopeoCli SkopeoLike
@@ -70,15 +70,15 @@ type fakeRemote struct {
 	assumeHas DigestSet
 }
 
-func (f *fakeRemote) Close() error                          { return nil }
-func (f *fakeRemote) BaseDir() string                       { return f.baseDir }
-func (f *fakeRemote) Transport() string                     { return f.transport }
-func (f *fakeRemote) OCIPath() string                       { return f.ociPath }
-func (f *fakeRemote) Skopeo() SkopeoLike                    { return f.skopeoCli }
-func (f *fakeRemote) FS() FS                                { return f.fs }
-func (f *fakeRemote) Lister() Lister                        { return f.lister }
-func (f *fakeRemote) ReadOnly() bool                        { return f.readOnly }
-func (f *fakeRemote) Validate(ctx context.Context) error    { return nil }
+func (f *fakeRemote) Close() error                       { return nil }
+func (f *fakeRemote) BaseDir() string                    { return f.baseDir }
+func (f *fakeRemote) Transport() skopeo.Transport        { return f.transport }
+func (f *fakeRemote) OCIPath() string                    { return f.ociPath }
+func (f *fakeRemote) Skopeo() SkopeoLike                 { return f.skopeoCli }
+func (f *fakeRemote) FS() FS                             { return f.fs }
+func (f *fakeRemote) Lister() Lister                     { return f.lister }
+func (f *fakeRemote) ReadOnly() bool                     { return f.readOnly }
+func (f *fakeRemote) Validate(ctx context.Context) error { return nil }
 func (f *fakeRemote) Dump(ctx context.Context, ref imageref.ImageRef) (string, error) {
 	if f.readOnly {
 		return "", errors.New("remote: read-only")
@@ -131,7 +131,7 @@ func seedDump(t *testing.T, tagDir, shareDir string) (manifestDigest string) {
 func newLocal(localFS FS, base string, sk SkopeoLike) *Local {
 	return &Local{
 		baseDir:   base,
-		transport: TransportContainersStorage,
+		transport: skopeo.TransportContainersStorage,
 		skopeoCli: sk,
 		fs:        localFS,
 	}
@@ -155,7 +155,7 @@ func TestPush_HappyPath_Sends_Then_Loads(t *testing.T) {
 	local := newLocal(localFS, localBase, localSk)
 	remote := &fakeRemote{
 		baseDir:   remoteBase,
-		transport: TransportContainersStorage,
+		transport: skopeo.TransportContainersStorage,
 		skopeoCli: remoteSk,
 		fs:        remoteFS,
 		assumeHas: NewDigestSet(),
@@ -207,7 +207,7 @@ func TestPush_ReusesRemoteHas(t *testing.T) {
 	local := newLocal(localFS, localBase, &recordingSkopeo{})
 	remote := &fakeRemote{
 		baseDir:   remoteBase,
-		transport: TransportContainersStorage,
+		transport: skopeo.TransportContainersStorage,
 		skopeoCli: &recordingSkopeo{},
 		fs:        remoteFS,
 		assumeHas: remoteHas,
@@ -246,7 +246,7 @@ func TestPush_DryRun_NoMutationsAnywhere(t *testing.T) {
 	local := newLocal(localFS, localBase, localSk)
 	remote := &fakeRemote{
 		baseDir:   remoteBase,
-		transport: TransportContainersStorage,
+		transport: skopeo.TransportContainersStorage,
 		skopeoCli: remoteSk,
 		fs:        remoteFS,
 		assumeHas: NewDigestSet(),
@@ -307,7 +307,7 @@ func TestPush_KeepGoing_AccumulatesErrors(t *testing.T) {
 	local := newLocal(localFS, localBase, localSk)
 	remote := &fakeRemote{
 		baseDir:   remoteBase,
-		transport: TransportContainersStorage,
+		transport: skopeo.TransportContainersStorage,
 		skopeoCli: &recordingSkopeo{},
 		fs:        remoteFS,
 		assumeHas: NewDigestSet(),
@@ -341,7 +341,7 @@ func TestPush_AssumeRemoteHasFromRawStrings_NoEnumeration(t *testing.T) {
 	local := newLocal(localFS, localBase, &recordingSkopeo{})
 	remote := &fakeRemote{
 		baseDir:   remoteBase,
-		transport: TransportContainersStorage,
+		transport: skopeo.TransportContainersStorage,
 		skopeoCli: peerSk,
 		fs:        remoteFS,
 		lister:    &fakeLister{refs: nil},
@@ -371,7 +371,7 @@ func TestPush_RejectsReadOnlyRemote(t *testing.T) {
 	local := newLocal(localFS, localBase, &recordingSkopeo{})
 	remote := &fakeRemote{
 		baseDir:   remoteBase,
-		transport: TransportContainersStorage,
+		transport: skopeo.TransportContainersStorage,
 		skopeoCli: &recordingSkopeo{},
 		fs:        remoteFS,
 		readOnly:  true,

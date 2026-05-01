@@ -29,7 +29,7 @@ func TestPull_HappyPath(t *testing.T) {
 	local := newLocal(localFS, localBase, localSk)
 	remote := &fakeRemote{
 		baseDir:   remoteBase,
-		transport: TransportContainersStorage,
+		transport: skopeo.TransportContainersStorage,
 		skopeoCli: peerSk,
 		fs:        remoteFS,
 	}
@@ -75,7 +75,7 @@ func TestPull_DryRun_NoMutationsAnywhere(t *testing.T) {
 	local := newLocal(localFS, localBase, localSk)
 	remote := &fakeRemote{
 		baseDir:   remoteBase,
-		transport: TransportContainersStorage,
+		transport: skopeo.TransportContainersStorage,
 		skopeoCli: peerSk,
 		fs:        remoteFS,
 	}
@@ -123,7 +123,7 @@ func TestPull_AssumeLocalHas_SkipsEnumeration(t *testing.T) {
 	local := newLocal(localFS, localBase, localSk)
 	remote := &fakeRemote{
 		baseDir:   remoteBase,
-		transport: TransportContainersStorage,
+		transport: skopeo.TransportContainersStorage,
 		skopeoCli: &recordingSkopeo{copyTo: func(_ context.Context, _, _ skopeo.TransportRef, _ string) error { return nil }},
 		fs:        remoteFS,
 	}
@@ -155,7 +155,7 @@ func TestPull_ResumeFromInterruptedPart(t *testing.T) {
 	local := newLocal(localFS, localBase, &recordingSkopeo{})
 	remote := &fakeRemote{
 		baseDir:   remoteBase,
-		transport: TransportContainersStorage,
+		transport: skopeo.TransportContainersStorage,
 		skopeoCli: &recordingSkopeo{copyTo: func(ctx context.Context, _, _ skopeo.TransportRef, _ string) error { return nil }},
 		fs:        remoteFS,
 	}

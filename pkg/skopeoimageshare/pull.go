@@ -252,7 +252,7 @@ func pullOne(
 	if !args.DryRun {
 		if err := local.skopeoCli.Copy(ctx,
 			skopeo.TransportRef{Transport: skopeo.TransportOci, Arg1: localTagDirAbs, Arg2: ref.String()},
-			skopeo.TransportRef{Transport: skopeo.Transport(local.transport), Arg1: ref.String()},
+			skopeo.TransportRef{Transport: local.transport, Arg1: ref.String()},
 			localShareAbs,
 		); err != nil {
 			rep.Err = fmt.Errorf("local load: %w", err)
@@ -274,7 +274,7 @@ func dumpAndDeriveClosurePull(
 	tagDirAbs, tagDirRel, shareAbs, shareRel string,
 ) (v1.Descriptor, v1.Manifest, error) {
 	src := skopeo.TransportRef{
-		Transport: skopeo.Transport(peer.Transport()),
+		Transport: peer.Transport(),
 		Arg1:      ref.String(),
 	}
 

@@ -48,7 +48,7 @@ func TestEnumerate_ContainersStorage(t *testing.T) {
 	}
 
 	cfg := EnumerateConfig{
-		Transport: TransportContainersStorage,
+		Transport: skopeo.TransportContainersStorage,
 		Skopeo: &fakeSkopeoInspector{
 			byRef: map[string][]byte{
 				"containers-storage:foo/bar:1": []byte(ociManifestFixture),
@@ -85,7 +85,7 @@ func TestEnumerate_DockerDaemon_SkipsBadInspect(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := EnumerateConfig{
-		Transport: TransportDockerDaemon,
+		Transport: skopeo.TransportDockerDaemon,
 		Docker:    &fakeLister{refs: []string{"only:1"}},
 		Skopeo:    &fakeSkopeoInspector{},
 		FS:        fs,
@@ -127,7 +127,7 @@ func TestEnumerate_OCI_FilesystemWalk(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := EnumerateConfig{
-		Transport: TransportOCI,
+		Transport: skopeo.TransportOci,
 		FS:        fs,
 		BaseDir:   tmp,
 	}
@@ -164,7 +164,7 @@ func TestEnumerate_OCI_MissingBaseDir_NoError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := EnumerateConfig{Transport: TransportOCI, FS: fs, BaseDir: tmp}
+	cfg := EnumerateConfig{Transport: skopeo.TransportOci, FS: fs, BaseDir: tmp}
 	got, err := Enumerate(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)

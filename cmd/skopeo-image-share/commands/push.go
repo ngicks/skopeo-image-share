@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ngicks/skopeo-image-share/pkg/cli/skopeo"
 	"github.com/ngicks/skopeo-image-share/pkg/skopeoimageshare"
 	"github.com/spf13/cobra"
 )
@@ -61,11 +62,11 @@ func runPush(cmd *cobra.Command, args []string) error {
 	share, err := initShare(ctx,
 		skopeoimageshare.LocalConfig{
 			BaseDir:   pushFlags.dataDir,
-			Transport: pushFlags.localTransport,
+			Transport: skopeo.Transport(pushFlags.localTransport),
 			OCIPath:   pushFlags.localPath,
 		},
 		skopeoimageshare.RemoteConfig{
-			Transport: pushFlags.remoteTransport,
+			Transport: skopeo.Transport(pushFlags.remoteTransport),
 			OCIPath:   pushFlags.remotePath,
 		},
 	)
