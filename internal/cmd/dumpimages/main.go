@@ -32,17 +32,13 @@ const (
 	donePath  = "internal/testdata/ocidir/done"
 )
 
-// dumpSpec is one entry in the dump set.
-//
-// Transport+Ref are passed as `<Transport>:<Ref>` to skopeo (the
-// pkg/cli/skopeo wrapper joins them with a single ':'). For
-// `docker://` sources include the leading `//` in Ref. ImageRef is
-// the index reference name written into image/index.json's
+// dumpSpec is one entry in the dump set. Src is the [skopeo.TransportRef]
+// used as the source of `skopeo copy`; ImageRef is the index reference
+// name written into image/index.json's
 // `org.opencontainers.image.ref.name`.
 type dumpSpec struct {
-	Transport string
-	Ref       string
-	ImageRef  string
+	Src      skopeo.TransportRef
+	ImageRef string
 }
 
 // images is the canonical dump set. Curated to give the `_Local`
@@ -53,14 +49,18 @@ type dumpSpec struct {
 //     with the above (exercises share/ deduplication).
 var images = []dumpSpec{
 	{
-		Transport: "docker",
-		Ref:       "//gcr.io/distroless/base-debian12@sha256:9dce90e688a57e59ce473ff7bc4c80bc8fe52d2303b4d99b44f297310bbd2210",
-		ImageRef:  "distroless-base",
+		Src: skopeo.TransportRef{
+			Transport: skopeo.TransportDocker,
+			Arg1:      "gcr.io/distroless/base-debian12@sha256:9dce90e688a57e59ce473ff7bc4c80bc8fe52d2303b4d99b44f297310bbd2210",
+		},
+		ImageRef: "distroless-base",
 	},
 	{
-		Transport: "docker",
-		Ref:       "//gcr.io/distroless/static-debian12:latest",
-		ImageRef:  "distroless-static",
+		Src: skopeo.TransportRef{
+			Transport: skopeo.TransportDocker,
+			Arg1:      "gcr.io/distroless/static-debian12:latest",
+		},
+		ImageRef: "distroless-static",
 	},
 }
 
@@ -98,9 +98,14 @@ func run() error {
 	}
 
 	for _, img := range images {
-		log.Printf("dumping %s:%s -> oci:%s:%s", img.Transport, img.Ref, imagePath, img.ImageRef)
-		if err := sk.CopyToOCI(ctx, img.Transport, img.Ref, imagePath, img.ImageRef, sharePath); err != nil {
-			return fmt.Errorf("copy %s:%s: %w", img.Transport, img.Ref, err)
+		srcStr, err := img.Src.Format()
+		if err != nil {
+			return fmt.Errorf("format %+v: %w", img.Src, err)
+		}
+		dst := skopeo.TransportRef{Transport: skopeo.TransportOci, Arg1: imagePath, Arg2: img.ImageRef}
+		log.Printf("dumping %s -> %s:%s:%s", srcStr, dst.Transport, dst.Arg1, dst.Arg2)
+		if err := sk.Copy(ctx, img.Src, dst, sharePath); err != nil {
+			return fmt.Errorf("copy %s: %w", srcStr, err)
 		}
 	}
 	log.Printf("dumped %d image(s) to oci:%s (share: %s)", len(images), imagePath, sharePath)

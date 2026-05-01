@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ngicks/skopeo-image-share/pkg/cli/skopeo"
 	"github.com/ngicks/skopeo-image-share/pkg/ocidir"
 )
 
@@ -17,11 +18,11 @@ type fakeSkopeoInspector struct {
 	err   error
 }
 
-func (f *fakeSkopeoInspector) InspectRaw(ctx context.Context, transport, ref string) ([]byte, error) {
+func (f *fakeSkopeoInspector) InspectRaw(ctx context.Context, src skopeo.TransportRef) ([]byte, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
-	if data, ok := f.byRef[transport+":"+ref]; ok {
+	if data, ok := f.byRef[string(src.Transport)+":"+src.Arg1]; ok {
 		return data, nil
 	}
 	return nil, errors.New("no fixture for ref")

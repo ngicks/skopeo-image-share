@@ -12,6 +12,7 @@ import (
 
 	"github.com/ngicks/go-common/contextkey"
 	"github.com/ngicks/skopeo-image-share/pkg/cli"
+	"github.com/ngicks/skopeo-image-share/pkg/cli/skopeo"
 	"github.com/ngicks/skopeo-image-share/pkg/imageref"
 	"github.com/ngicks/skopeo-image-share/pkg/ocidir"
 	"github.com/opencontainers/go-digest"
@@ -58,9 +59,8 @@ type PushArgs struct {
 // The methods are the four we drive in push/pull orchestration.
 type SkopeoLike interface {
 	Version(ctx context.Context) (string, error)
-	InspectRaw(ctx context.Context, transport, ref string) ([]byte, error)
-	CopyToOCI(ctx context.Context, srcTransport, srcRef, ociDir, imageRef, sharedBlobDir string) error
-	CopyFromOCI(ctx context.Context, ociDir, imageRef, sharedBlobDir, dstTransport, dstRef string) error
+	InspectRaw(ctx context.Context, src skopeo.TransportRef) ([]byte, error)
+	Copy(ctx context.Context, src, dst skopeo.TransportRef, sharedBlobDir string) error
 }
 
 // PushImageReport is the per-image summary line surfaced in the CLI
@@ -284,7 +284,11 @@ func pushOne(
 	rep.BytesSent = bytesSent
 
 	if !args.DryRun {
-		if err := peer.Skopeo().CopyFromOCI(ctx, remoteTagDirAbs, ref.String(), remoteShareAbs, peer.Transport(), ref.String()); err != nil {
+		if err := peer.Skopeo().Copy(ctx,
+			skopeo.TransportRef{Transport: skopeo.TransportOci, Arg1: remoteTagDirAbs, Arg2: ref.String()},
+			skopeo.TransportRef{Transport: skopeo.Transport(peer.Transport()), Arg1: ref.String()},
+			remoteShareAbs,
+		); err != nil {
 			rep.Err = fmt.Errorf("remote load: %w", err)
 			return rep
 		}
@@ -307,14 +311,19 @@ func dumpAndDeriveClosurePush(
 	ref imageref.ImageRef,
 	tagDirAbs, tagDirRel, localShareAbs, localShareRel string,
 ) (v1.Descriptor, v1.Manifest, error) {
-	srcTransport := local.transport
-	srcRef := ref.String()
+	src := skopeo.TransportRef{
+		Transport: skopeo.Transport(local.transport),
+		Arg1:      ref.String(),
+	}
 
 	if !args.DryRun {
 		if err := local.fs.MkdirAll(tagDirRel, 0o755); err != nil {
 			return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("mkdir %s: %w", tagDirRel, err)
 		}
-		if err := local.skopeoCli.CopyToOCI(ctx, srcTransport, srcRef, tagDirAbs, srcRef, localShareAbs); err != nil {
+		if err := local.skopeoCli.Copy(ctx, src,
+			skopeo.TransportRef{Transport: skopeo.TransportOci, Arg1: tagDirAbs, Arg2: ref.String()},
+			localShareAbs,
+		); err != nil {
 			return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("skopeo copy: %w", err)
 		}
 
@@ -329,7 +338,7 @@ func dumpAndDeriveClosurePush(
 		return mDesc, man, nil
 	}
 
-	raw, err := local.skopeoCli.InspectRaw(ctx, srcTransport, srcRef)
+	raw, err := local.skopeoCli.InspectRaw(ctx, src)
 	if err != nil {
 		return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("skopeo inspect --raw: %w", err)
 	}

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ngicks/skopeo-image-share/pkg/cli/skopeo"
 )
 
 func TestPull_HappyPath(t *testing.T) {
@@ -19,7 +21,7 @@ func TestPull_HappyPath(t *testing.T) {
 
 	localSk := &recordingSkopeo{}
 	peerSk := &recordingSkopeo{
-		copyToOCI: func(ctx context.Context, srcTransport, srcRef, ociDir, imageRef, sharedBlobDir string) error {
+		copyTo: func(ctx context.Context, src, dst skopeo.TransportRef, sharedBlobDir string) error {
 			return nil
 		},
 	}
@@ -122,7 +124,7 @@ func TestPull_AssumeLocalHas_SkipsEnumeration(t *testing.T) {
 	remote := &fakeRemote{
 		baseDir:   remoteBase,
 		transport: TransportContainersStorage,
-		skopeoCli: &recordingSkopeo{copyToOCI: func(_ context.Context, _, _, _, _, _ string) error { return nil }},
+		skopeoCli: &recordingSkopeo{copyTo: func(_ context.Context, _, _ skopeo.TransportRef, _ string) error { return nil }},
 		fs:        remoteFS,
 	}
 
@@ -154,7 +156,7 @@ func TestPull_ResumeFromInterruptedPart(t *testing.T) {
 	remote := &fakeRemote{
 		baseDir:   remoteBase,
 		transport: TransportContainersStorage,
-		skopeoCli: &recordingSkopeo{copyToOCI: func(ctx context.Context, _, _, _, _, _ string) error { return nil }},
+		skopeoCli: &recordingSkopeo{copyTo: func(ctx context.Context, _, _ skopeo.TransportRef, _ string) error { return nil }},
 		fs:        remoteFS,
 	}
 

@@ -5,7 +5,6 @@ package skopeo
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -20,49 +19,51 @@ const (
 	TransportContainersStorage Transport = "containers-storage"
 	TransportDocker            Transport = "docker"
 	TransportDockerArchive     Transport = "docker-archive"
+	TransportDockerDaemon      Transport = "docker-daemon"
 	TransportOci               Transport = "oci"
 )
 
 type TransportRef struct {
 	Transport Transport
-	// ref for "containers-storage" and "docker", path for "dir", "docker-archive" and "oci"
+	// ref for "containers-storage", "docker" and "docker-daemon", path for "dir", "docker-archive" and "oci"
 	Arg1 string
 	// tag for "oci", optional docker-reference for "docker-archive"
 	Arg2 string
 }
 
 func (r TransportRef) Format() (string, error) {
-	return appendTransportRef(r.Transport, r.Arg1, r.Arg2)
+	return appendTransportRefTag(r.Transport, r.Arg1, r.Arg2)
 }
 
-// appendTransportRef appends ref to transport.
+// appendTransportRefTag appends ref to transport.
 // See https://github.com/containers/skopeo/blob/main/docs/skopeo.1.md#image-names
-func appendTransportRef(transport Transport, ref, tag string) (string, error) {
-	if ref == "" {
-		return "", fmt.Errorf("empty ref: %q:%q:%q", transport, ref, tag)
+func appendTransportRefTag(transport Transport, arg1, arg2 string) (string, error) {
+	if arg1 == "" {
+		return "", fmt.Errorf("empty ref: %q:%q:%q", transport, arg1, arg2)
 	}
 	switch transport {
-	case TransportContainersStorage, TransportDir:
+	case TransportContainersStorage, TransportDir, TransportDockerDaemon:
 		// containers-storage:docker-reference
 		// dir:path
-		return string(transport) + ":" + ref, nil
+		// docker-daemon:docker-reference
+		return string(transport) + ":" + arg1, nil
 	case TransportDocker:
 		// docker://docker-reference
-		return string(transport) + "://" + ref, nil
+		return string(transport) + "://" + arg1, nil
 	case TransportDockerArchive:
 		// docker-archive:path[:docker-reference]
-		if tag != "" {
-			return string(transport) + ":" + ref + ":" + tag, nil
+		if arg2 != "" {
+			return string(transport) + ":" + arg1 + ":" + arg2, nil
 		}
-		return string(transport) + ":" + ref, nil
+		return string(transport) + ":" + arg1, nil
 	case TransportOci:
 		// oci:path:tag
-		if tag == "" {
-			return "", fmt.Errorf("empty tag: %q:%q:%q", transport, ref, tag)
+		if arg2 == "" {
+			return "", fmt.Errorf("empty tag: %q:%q:%q", transport, arg1, arg2)
 		}
-		return string(transport) + ":" + ref + ":" + tag, nil
+		return string(transport) + ":" + arg1 + ":" + arg2, nil
 	default:
-		return "", fmt.Errorf("unkonwn transport: %q:%q:%q", transport, ref, tag)
+		return "", fmt.Errorf("unkonwn transport: %q:%q:%q", transport, arg1, arg2)
 	}
 }
 
@@ -89,80 +90,66 @@ func (s *Skopeo) Version(ctx context.Context) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// InspectRaw returns the raw manifest bytes for transport:ref via
-// `skopeo inspect --raw <transport>:<ref>`.
-func (s *Skopeo) InspectRaw(ctx context.Context, transport, ref string) ([]byte, error) {
+// InspectRaw returns the raw manifest bytes for src via
+// `skopeo inspect --raw <src>`.
+func (s *Skopeo) InspectRaw(ctx context.Context, src TransportRef) ([]byte, error) {
+	srcStr, err := src.Format()
+	if err != nil {
+		return nil, err
+	}
 	return s.Runner.Run(ctx, []string{
 		"inspect", "--raw",
-		transport + ":" + ref,
+		srcStr,
 	})
 }
 
 // InspectRawShared inspects an entry of a dumped oci: layout that
 // uses a shared blob pool and returns the raw manifest bytes. Wraps
-// `skopeo inspect --raw`. ociDir and imageRef are required.
-func (s *Skopeo) InspectRawShared(ctx context.Context, ociDir, imageRef, sharedBlobDir string) ([]byte, error) {
-	if ociDir == "" {
-		return nil, errors.New("skopeo: empty ociDir")
+// `skopeo inspect --raw`. src.Transport must be [TransportOci].
+func (s *Skopeo) InspectRawShared(ctx context.Context, src TransportRef, sharedBlobDir string) ([]byte, error) {
+	if src.Transport != TransportOci {
+		return nil, fmt.Errorf("skopeo: InspectRawShared requires src.Transport == %q, got %q", TransportOci, src.Transport)
 	}
-	if imageRef == "" {
-		return nil, errors.New("skopeo: empty imageRef")
+	srcStr, err := src.Format()
+	if err != nil {
+		return nil, err
 	}
 	return s.Runner.Run(ctx, []string{
 		"inspect", "--raw",
 		"--shared-blob-dir", sharedBlobDir,
-		"oci:" + ociDir + ":" + imageRef,
+		srcStr,
 	})
 }
 
-// CopyToOCI copies <srcTransport>:<srcRef> into the oci: layout under
-// ociDir using the shared blob pool at sharedBlobDir. Wraps
-// `skopeo copy`. ociDir and imageRef are required; imageRef must match
-// the value passed to a later [Skopeo.CopyFromOCI] reading the same dir.
-func (s *Skopeo) CopyToOCI(ctx context.Context, srcTransport, srcRef, ociDir, imageRef, sharedBlobDir string) error {
-	if ociDir == "" {
-		return errors.New("skopeo: empty ociDir")
-	}
-	if imageRef == "" {
-		return errors.New("skopeo: empty imageRef")
-	}
-	argv := []string{"copy"}
-	argv = append(argv, s.compressionArgs()...)
-	argv = append(argv,
-		"--dest-shared-blob-dir", sharedBlobDir,
-		srcTransport+":"+srcRef,
-		"oci:"+ociDir+":"+imageRef,
-	)
-	_, err := s.Runner.Run(ctx, argv)
-	return err
-}
-
-// CopyFromOCI copies an entry of the oci: layout under ociDir
-// (selected by imageRef) into <dstTransport>:<dstRef> using the
-// shared blob pool at sharedBlobDir. Wraps `skopeo copy`. ociDir and
-// imageRef are required; imageRef must match the value used by the
-// [Skopeo.CopyToOCI] that wrote the entry.
-func (s *Skopeo) CopyFromOCI(ctx context.Context, ociDir, imageRef, sharedBlobDir, dstTransport, dstRef string) error {
-	if ociDir == "" {
-		return errors.New("skopeo: empty ociDir")
-	}
-	if imageRef == "" {
-		return errors.New("skopeo: empty imageRef")
-	}
-
-	src, err := appendTransportRef("oci", ociDir, imageRef)
+// Copy copies src into dst using the shared blob pool at
+// sharedBlobDir. Wraps `skopeo copy`. The shared-blob-dir flag is
+// applied as `--src-shared-blob-dir` when src.Transport ==
+// [TransportOci], or `--dest-shared-blob-dir` when dst.Transport ==
+// [TransportOci]; passing a non-empty sharedBlobDir requires exactly
+// one side to be OCI.
+func (s *Skopeo) Copy(ctx context.Context, src, dst TransportRef, sharedBlobDir string) error {
+	srcStr, err := src.Format()
 	if err != nil {
 		return err
 	}
-
+	dstStr, err := dst.Format()
+	if err != nil {
+		return err
+	}
 	argv := []string{"copy"}
 	argv = append(argv, s.compressionArgs()...)
-	argv = append(argv,
-		"--src-shared-blob-dir", sharedBlobDir,
-		src,
-		dstTransport+":"+dstRef,
-	)
-
+	if sharedBlobDir != "" {
+		switch {
+		case src.Transport == TransportOci:
+			argv = append(argv, "--src-shared-blob-dir", sharedBlobDir)
+		case dst.Transport == TransportOci:
+			argv = append(argv, "--dest-shared-blob-dir", sharedBlobDir)
+		default:
+			return fmt.Errorf("skopeo: sharedBlobDir requires one side to be %q (got src=%q dst=%q)",
+				TransportOci, src.Transport, dst.Transport)
+		}
+	}
+	argv = append(argv, srcStr, dstStr)
 	_, err = s.Runner.Run(ctx, argv)
 	return err
 }

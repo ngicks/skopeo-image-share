@@ -11,6 +11,7 @@ import (
 	"path"
 
 	"github.com/ngicks/go-common/contextkey"
+	"github.com/ngicks/skopeo-image-share/pkg/cli/skopeo"
 	"github.com/ngicks/skopeo-image-share/pkg/ocidir"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -27,7 +28,7 @@ const (
 // interface lets tests substitute a fake without spinning up a fake
 // skopeo on $PATH.
 type SkopeoInspector interface {
-	InspectRaw(ctx context.Context, transport, ref string) ([]byte, error)
+	InspectRaw(ctx context.Context, src skopeo.TransportRef) ([]byte, error)
 }
 
 // PodmanLister is the [Podman] subset used by enumeration.
@@ -111,7 +112,10 @@ func enumerateViaSkopeoInspect(ctx context.Context, cfg EnumerateConfig, lister 
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		raw, err := cfg.Skopeo.InspectRaw(ctx, transport, ref)
+		raw, err := cfg.Skopeo.InspectRaw(ctx, skopeo.TransportRef{
+			Transport: skopeo.Transport(transport),
+			Arg1:      ref,
+		})
 		if err != nil {
 			logger.LogAttrs(ctx, slog.LevelWarn, "enumerate.inspect.skip",
 				slog.String("transport", transport),

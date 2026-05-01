@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ngicks/go-common/contextkey"
+	"github.com/ngicks/skopeo-image-share/pkg/cli/skopeo"
 	"github.com/ngicks/skopeo-image-share/pkg/imageref"
 	"github.com/ngicks/skopeo-image-share/pkg/ocidir"
 	"github.com/opencontainers/go-digest"
@@ -249,7 +250,11 @@ func pullOne(
 	rep.BytesFetched = bytesFetched
 
 	if !args.DryRun {
-		if err := local.skopeoCli.CopyFromOCI(ctx, localTagDirAbs, ref.String(), localShareAbs, local.transport, ref.String()); err != nil {
+		if err := local.skopeoCli.Copy(ctx,
+			skopeo.TransportRef{Transport: skopeo.TransportOci, Arg1: localTagDirAbs, Arg2: ref.String()},
+			skopeo.TransportRef{Transport: skopeo.Transport(local.transport), Arg1: ref.String()},
+			localShareAbs,
+		); err != nil {
 			rep.Err = fmt.Errorf("local load: %w", err)
 			return rep
 		}
@@ -268,14 +273,19 @@ func dumpAndDeriveClosurePull(
 	ref imageref.ImageRef,
 	tagDirAbs, tagDirRel, shareAbs, shareRel string,
 ) (v1.Descriptor, v1.Manifest, error) {
-	srcTransport := peer.Transport()
-	srcRef := ref.String()
+	src := skopeo.TransportRef{
+		Transport: skopeo.Transport(peer.Transport()),
+		Arg1:      ref.String(),
+	}
 
 	if !args.DryRun {
 		if err := peer.FS().MkdirAll(tagDirRel, 0o755); err != nil {
 			return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("mkdir %s: %w", tagDirRel, err)
 		}
-		if err := peer.Skopeo().CopyToOCI(ctx, srcTransport, srcRef, tagDirAbs, srcRef, shareAbs); err != nil {
+		if err := peer.Skopeo().Copy(ctx, src,
+			skopeo.TransportRef{Transport: skopeo.TransportOci, Arg1: tagDirAbs, Arg2: ref.String()},
+			shareAbs,
+		); err != nil {
 			return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("skopeo copy: %w", err)
 		}
 
@@ -290,7 +300,7 @@ func dumpAndDeriveClosurePull(
 		return mDesc, man, nil
 	}
 
-	raw, err := peer.Skopeo().InspectRaw(ctx, srcTransport, srcRef)
+	raw, err := peer.Skopeo().InspectRaw(ctx, src)
 	if err != nil {
 		return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("skopeo inspect --raw: %w", err)
 	}

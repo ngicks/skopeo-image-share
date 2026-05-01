@@ -155,7 +155,7 @@ func NewRemote(ctx context.Context, cfg RemoteConfig) (Remote, error) {
 	}
 	r.baseDir = base
 	r.fs = sftpfs.New(sftpC, base)
-	r.skopeoCli = skopeo.New(cli.NewSshRunner(cfg.Target, "skopeo"))
+	r.skopeoCli = &skopeo.Skopeo{Runner: cli.NewSshRunner(cfg.Target, "skopeo")}
 	switch cfg.Transport {
 	case TransportContainersStorage:
 		r.lister = docker.NewPodman(cli.NewSshRunner(cfg.Target, "podman"))
@@ -345,7 +345,11 @@ func dumpRemote(ctx context.Context, transport, baseDir string, sk SkopeoLike, f
 	if err := fs.MkdirAll(tagDirRel, 0o755); err != nil {
 		return "", fmt.Errorf("dump: mkdir %s: %w", tagDirRel, err)
 	}
-	if err := sk.CopyToOCI(ctx, transport, ref.String(), tagDirAbs, ref.String(), shareAbs); err != nil {
+	if err := sk.Copy(ctx,
+		skopeo.TransportRef{Transport: skopeo.Transport(transport), Arg1: ref.String()},
+		skopeo.TransportRef{Transport: skopeo.TransportOci, Arg1: tagDirAbs, Arg2: ref.String()},
+		shareAbs,
+	); err != nil {
 		return "", fmt.Errorf("dump: skopeo copy: %w", err)
 	}
 	return tagDirAbs, nil

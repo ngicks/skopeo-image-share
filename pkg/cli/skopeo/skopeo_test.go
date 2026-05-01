@@ -23,10 +23,14 @@ func (r *stubRunner) Run(ctx context.Context, argv []string) ([]byte, error) {
 	return r.out, r.err
 }
 
+func newSkopeo(r *stubRunner) *Skopeo {
+	return &Skopeo{Runner: r}
+}
+
 func TestSkopeo_Version_TrimsOutput(t *testing.T) {
 	t.Parallel()
 	r := &stubRunner{out: []byte("skopeo version 1.20.0\n")}
-	s := New(r)
+	s := newSkopeo(r)
 	v, err := s.Version(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -42,8 +46,11 @@ func TestSkopeo_Version_TrimsOutput(t *testing.T) {
 func TestSkopeo_InspectRaw_Argv(t *testing.T) {
 	t.Parallel()
 	r := &stubRunner{out: []byte(`{"schemaVersion":2}`)}
-	s := New(r)
-	_, err := s.InspectRaw(context.Background(), "containers-storage", "myimg:latest")
+	s := newSkopeo(r)
+	_, err := s.InspectRaw(context.Background(), TransportRef{
+		Transport: TransportContainersStorage,
+		Arg1:      "myimg:latest",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,8 +63,10 @@ func TestSkopeo_InspectRaw_Argv(t *testing.T) {
 func TestSkopeo_InspectRawShared_Argv(t *testing.T) {
 	t.Parallel()
 	r := &stubRunner{}
-	s := New(r)
-	_, err := s.InspectRawShared(context.Background(), "/tmp/oci/_tags/v1", "ghcr.io/a/b:c", "/tmp/share")
+	s := newSkopeo(r)
+	_, err := s.InspectRawShared(context.Background(),
+		TransportRef{Transport: TransportOci, Arg1: "/tmp/oci/_tags/v1", Arg2: "ghcr.io/a/b:c"},
+		"/tmp/share")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,24 +76,24 @@ func TestSkopeo_InspectRawShared_Argv(t *testing.T) {
 	}
 }
 
-func TestSkopeo_InspectRawShared_RejectsEmptyDirOrRef(t *testing.T) {
+func TestSkopeo_InspectRawShared_RejectsNonOci(t *testing.T) {
 	t.Parallel()
-	s := New(&stubRunner{})
-	if _, err := s.InspectRawShared(context.Background(), "", "x:y", "/share"); err == nil {
-		t.Error("expected error for empty ociDir")
-	}
-	if _, err := s.InspectRawShared(context.Background(), "/dir", "", "/share"); err == nil {
-		t.Error("expected error for empty imageRef")
+	s := newSkopeo(&stubRunner{})
+	if _, err := s.InspectRawShared(context.Background(),
+		TransportRef{Transport: TransportContainersStorage, Arg1: "x:y"},
+		"/share"); err == nil {
+		t.Error("expected error for non-oci src")
 	}
 }
 
-func TestSkopeo_CopyToOCI_Argv(t *testing.T) {
+func TestSkopeo_Copy_ToOCI_Argv(t *testing.T) {
 	t.Parallel()
 	r := &stubRunner{}
-	s := New(r)
-	err := s.CopyToOCI(context.Background(),
-		"containers-storage", "ghcr.io/a/b:c",
-		"/tmp/oci/_tags/c", "ghcr.io/a/b:c", "/tmp/share")
+	s := newSkopeo(r)
+	err := s.Copy(context.Background(),
+		TransportRef{Transport: TransportContainersStorage, Arg1: "ghcr.io/a/b:c"},
+		TransportRef{Transport: TransportOci, Arg1: "/tmp/oci/_tags/c", Arg2: "ghcr.io/a/b:c"},
+		"/tmp/share")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,13 +108,14 @@ func TestSkopeo_CopyToOCI_Argv(t *testing.T) {
 	}
 }
 
-func TestSkopeo_CopyFromOCI_Argv(t *testing.T) {
+func TestSkopeo_Copy_FromOCI_Argv(t *testing.T) {
 	t.Parallel()
 	r := &stubRunner{}
-	s := New(r)
-	err := s.CopyFromOCI(context.Background(),
-		"/tmp/oci/_tags/c", "ghcr.io/a/b:c", "/tmp/share",
-		"containers-storage", "ghcr.io/a/b:c")
+	s := newSkopeo(r)
+	err := s.Copy(context.Background(),
+		TransportRef{Transport: TransportOci, Arg1: "/tmp/oci/_tags/c", Arg2: "ghcr.io/a/b:c"},
+		TransportRef{Transport: TransportContainersStorage, Arg1: "ghcr.io/a/b:c"},
+		"/tmp/share")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,42 +130,63 @@ func TestSkopeo_CopyFromOCI_Argv(t *testing.T) {
 	}
 }
 
-func TestSkopeo_CopyToOCI_RejectsEmptyDirOrRef(t *testing.T) {
+func TestSkopeo_Copy_NoShareDir_OmitsFlag(t *testing.T) {
 	t.Parallel()
-	s := New(&stubRunner{})
-	if err := s.CopyToOCI(context.Background(), "containers-storage", "x:y", "", "x:y", "/share"); err == nil {
-		t.Error("expected error for empty ociDir")
+	r := &stubRunner{}
+	s := newSkopeo(r)
+	err := s.Copy(context.Background(),
+		TransportRef{Transport: TransportDocker, Arg1: "registry/foo:latest"},
+		TransportRef{Transport: TransportContainersStorage, Arg1: "registry/foo:latest"},
+		"")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if err := s.CopyToOCI(context.Background(), "containers-storage", "x:y", "/dir", "", "/share"); err == nil {
-		t.Error("expected error for empty imageRef")
+	want := [][]string{{
+		"copy",
+		"docker://registry/foo:latest",
+		"containers-storage:registry/foo:latest",
+	}}
+	if !reflect.DeepEqual(r.got, want) {
+		t.Errorf("argv mismatch:\n got: %v\nwant: %v", r.got, want)
 	}
 }
 
-func TestSkopeo_CopyFromOCI_RejectsEmptyDirOrRef(t *testing.T) {
+func TestSkopeo_Copy_RejectsShareDirWithoutOciSide(t *testing.T) {
 	t.Parallel()
-	s := New(&stubRunner{})
-	if err := s.CopyFromOCI(context.Background(), "", "x:y", "/share", "containers-storage", "x:y"); err == nil {
-		t.Error("expected error for empty ociDir")
+	s := newSkopeo(&stubRunner{})
+	err := s.Copy(context.Background(),
+		TransportRef{Transport: TransportDocker, Arg1: "a/b:c"},
+		TransportRef{Transport: TransportContainersStorage, Arg1: "a/b:c"},
+		"/share")
+	if err == nil {
+		t.Error("expected error when sharedBlobDir is set but neither side is oci")
 	}
-	if err := s.CopyFromOCI(context.Background(), "/dir", "", "/share", "containers-storage", "x:y"); err == nil {
-		t.Error("expected error for empty imageRef")
+}
+
+func TestSkopeo_Copy_RejectsEmptyOciDir(t *testing.T) {
+	t.Parallel()
+	s := newSkopeo(&stubRunner{})
+	err := s.Copy(context.Background(),
+		TransportRef{Transport: TransportContainersStorage, Arg1: "x:y"},
+		TransportRef{Transport: TransportOci, Arg2: "x:y"},
+		"/share")
+	if err == nil {
+		t.Error("expected error for empty ociDir")
 	}
 }
 
 func TestSkopeo_CompressionArgs(t *testing.T) {
 	t.Parallel()
 	r := &stubRunner{}
-	s := New(r)
+	s := newSkopeo(r)
 	s.CompressionFormat = "zstd"
 	s.CompressionLevel = 19
-	if err := s.CopyToOCI(context.Background(),
-		"containers-storage", "ghcr.io/a/b:c",
-		"/tmp/oci/_tags/c", "ghcr.io/a/b:c", "/tmp/share"); err != nil {
+	src := TransportRef{Transport: TransportContainersStorage, Arg1: "ghcr.io/a/b:c"}
+	dst := TransportRef{Transport: TransportOci, Arg1: "/tmp/oci/_tags/c", Arg2: "ghcr.io/a/b:c"}
+	if err := s.Copy(context.Background(), src, dst, "/tmp/share"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CopyFromOCI(context.Background(),
-		"/tmp/oci/_tags/c", "ghcr.io/a/b:c", "/tmp/share",
-		"containers-storage", "ghcr.io/a/b:c"); err != nil {
+	if err := s.Copy(context.Background(), dst, src, "/tmp/share"); err != nil {
 		t.Fatal(err)
 	}
 	want := [][]string{
@@ -185,8 +216,10 @@ func TestSkopeo_PropagatesRunnerError(t *testing.T) {
 	t.Parallel()
 	want := errors.New("simulated runner error")
 	r := &stubRunner{err: want}
-	s := New(r)
-	_, err := s.InspectRaw(context.Background(), "containers-storage", "x:y")
+	s := newSkopeo(r)
+	_, err := s.InspectRaw(context.Background(), TransportRef{
+		Transport: TransportContainersStorage, Arg1: "x:y",
+	})
 	if !errors.Is(err, want) {
 		t.Errorf("expected wrapped %v, got %v", want, err)
 	}

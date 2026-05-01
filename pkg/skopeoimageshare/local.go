@@ -70,7 +70,7 @@ func NewLocal(ctx context.Context, cfg LocalConfig) (*Local, error) {
 		baseDir:   base,
 		transport: cfg.Transport,
 		ociPath:   cfg.OCIPath,
-		skopeoCli: skopeo.New(cli.NewLocalRunner("skopeo")),
+		skopeoCli: &skopeo.Skopeo{Runner: cli.NewLocalRunner("skopeo")},
 		fs:        fs,
 	}
 	switch cfg.Transport {
@@ -135,7 +135,11 @@ func (l *Local) Dump(ctx context.Context, ref imageref.ImageRef) (string, error)
 	if err := l.fs.MkdirAll(tagDirRel, 0o755); err != nil {
 		return "", fmt.Errorf("dump: mkdir %s: %w", tagDirRel, err)
 	}
-	if err := l.skopeoCli.CopyToOCI(ctx, l.transport, ref.String(), tagDirAbs, ref.String(), store.ShareDir()); err != nil {
+	if err := l.skopeoCli.Copy(ctx,
+		skopeo.TransportRef{Transport: skopeo.Transport(l.transport), Arg1: ref.String()},
+		skopeo.TransportRef{Transport: skopeo.TransportOci, Arg1: tagDirAbs, Arg2: ref.String()},
+		store.ShareDir(),
+	); err != nil {
 		return "", fmt.Errorf("dump: skopeo copy: %w", err)
 	}
 	return tagDirAbs, nil

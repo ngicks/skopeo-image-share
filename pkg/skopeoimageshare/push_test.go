@@ -9,16 +9,18 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/ngicks/skopeo-image-share/pkg/cli/skopeo"
 	"github.com/ngicks/skopeo-image-share/pkg/imageref"
 )
 
 // recordingSkopeo is a fake [SkopeoLike] that records calls and lets
-// tests fabricate responses.
+// tests fabricate responses. copyTo / copyFrom hooks are dispatched
+// based on which side of [Copy] is OCI.
 type recordingSkopeo struct {
-	versionRet  string
-	inspectRaw  map[string][]byte
-	copyToOCI   func(ctx context.Context, srcTransport, srcRef, ociDir, imageRef, sharedBlobDir string) error
-	copyFromOCI func(ctx context.Context, ociDir, imageRef, sharedBlobDir, dstTransport, dstRef string) error
+	versionRet string
+	inspectRaw map[string][]byte
+	copyTo     func(ctx context.Context, src, dst skopeo.TransportRef, sharedBlobDir string) error
+	copyFrom   func(ctx context.Context, src, dst skopeo.TransportRef, sharedBlobDir string) error
 
 	inspectCount  atomic.Int32
 	copyToCount   atomic.Int32
@@ -31,24 +33,25 @@ func (s *recordingSkopeo) Version(ctx context.Context) (string, error) {
 	}
 	return s.versionRet, nil
 }
-func (s *recordingSkopeo) InspectRaw(ctx context.Context, transport, ref string) ([]byte, error) {
+func (s *recordingSkopeo) InspectRaw(ctx context.Context, src skopeo.TransportRef) ([]byte, error) {
 	s.inspectCount.Add(1)
-	if data, ok := s.inspectRaw[transport+":"+ref]; ok {
+	if data, ok := s.inspectRaw[string(src.Transport)+":"+src.Arg1]; ok {
 		return data, nil
 	}
 	return nil, errors.New("no inspect fixture")
 }
-func (s *recordingSkopeo) CopyToOCI(ctx context.Context, srcTransport, srcRef, ociDir, imageRef, sharedBlobDir string) error {
-	s.copyToCount.Add(1)
-	if s.copyToOCI != nil {
-		return s.copyToOCI(ctx, srcTransport, srcRef, ociDir, imageRef, sharedBlobDir)
-	}
-	return nil
-}
-func (s *recordingSkopeo) CopyFromOCI(ctx context.Context, ociDir, imageRef, sharedBlobDir, dstTransport, dstRef string) error {
-	s.copyFromCount.Add(1)
-	if s.copyFromOCI != nil {
-		return s.copyFromOCI(ctx, ociDir, imageRef, sharedBlobDir, dstTransport, dstRef)
+func (s *recordingSkopeo) Copy(ctx context.Context, src, dst skopeo.TransportRef, sharedBlobDir string) error {
+	switch {
+	case dst.Transport == skopeo.TransportOci:
+		s.copyToCount.Add(1)
+		if s.copyTo != nil {
+			return s.copyTo(ctx, src, dst, sharedBlobDir)
+		}
+	case src.Transport == skopeo.TransportOci:
+		s.copyFromCount.Add(1)
+		if s.copyFrom != nil {
+			return s.copyFrom(ctx, src, dst, sharedBlobDir)
+		}
 	}
 	return nil
 }
@@ -143,7 +146,7 @@ func TestPush_HappyPath_Sends_Then_Loads(t *testing.T) {
 	seedDump(t, tagDir, shareDir)
 
 	localSk := &recordingSkopeo{
-		copyToOCI: func(ctx context.Context, srcTransport, srcRef, ociDir, imageRef, sharedBlobDir string) error {
+		copyTo: func(ctx context.Context, src, dst skopeo.TransportRef, sharedBlobDir string) error {
 			return nil
 		},
 	}
@@ -293,8 +296,8 @@ func TestPush_KeepGoing_AccumulatesErrors(t *testing.T) {
 	seedDump(t, tagDir, shareDir)
 
 	localSk := &recordingSkopeo{
-		copyToOCI: func(ctx context.Context, srcTransport, srcRef, ociDir, imageRef, sharedBlobDir string) error {
-			if strings.Contains(srcRef, "fail") {
+		copyTo: func(ctx context.Context, src, dst skopeo.TransportRef, sharedBlobDir string) error {
+			if strings.Contains(src.Arg1, "fail") {
 				return errors.New("simulated failure")
 			}
 			return nil
