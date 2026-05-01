@@ -14,7 +14,7 @@ import (
 
 // Local is the local-side push/pull endpoint. It owns the resolved
 // base data dir, the local skopeo / podman / docker wrappers, and an
-// [FS] rooted at BaseDir. Build via [NewLocal].
+// [Fs] rooted at BaseDir. Build via [NewLocal].
 //
 // [Local.Push] and [Local.Pull] drive a transfer against any [Remote]
 // (typically the SSH-backed implementation from [NewRemote]).
@@ -25,7 +25,7 @@ type Local struct {
 
 	skopeoCli SkopeoLike
 	lister    Lister
-	fs        FS
+	fs        Fs
 
 	validateOnce sync.Once
 	validateErr  error
@@ -44,7 +44,7 @@ type LocalConfig struct {
 }
 
 // NewLocal resolves BaseDir, ensures the on-disk layout, and builds
-// the local skopeo wrapper plus an [FS] rooted at BaseDir. A
+// the local skopeo wrapper plus an [Fs] rooted at BaseDir. A
 // transport-appropriate lister (podman / docker) is wired up
 // automatically.
 func NewLocal(ctx context.Context, cfg LocalConfig) (*Local, error) {
@@ -62,7 +62,7 @@ func NewLocal(ctx context.Context, cfg LocalConfig) (*Local, error) {
 	if err := NewStore(base).EnsureLayout(ctx); err != nil {
 		return nil, fmt.Errorf("local: ensure layout: %w", err)
 	}
-	fs, err := NewLocalFS(base)
+	fs, err := NewLocalFs(base)
 	if err != nil {
 		return nil, err
 	}
@@ -95,8 +95,8 @@ func (l *Local) OCIPath() string { return l.ociPath }
 // Skopeo returns the local skopeo wrapper.
 func (l *Local) Skopeo() SkopeoLike { return l.skopeoCli }
 
-// FS returns the local [FS] rooted at BaseDir.
-func (l *Local) FS() FS { return l.fs }
+// FS returns the local [Fs] rooted at BaseDir.
+func (l *Local) FS() Fs { return l.fs }
 
 // Lister returns the local docker / podman wrapper, or nil for
 // [skopeo.TransportOci].

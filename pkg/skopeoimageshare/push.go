@@ -379,7 +379,7 @@ func descriptorSizes(descs []v1.Descriptor) map[string]int64 {
 
 // transferTagDir ships oci-layout + index.json from srcDir to dstDir
 // using [SafeWrite] (atomic tmp+rename).
-func transferTagDir(ctx context.Context, srcFS FS, srcDir string, dstFS FS, dstDir string) error {
+func transferTagDir(ctx context.Context, srcFS Fs, srcDir string, dstFS Fs, dstDir string) error {
 	return CopyTagDirSmallFiles(ctx, srcFS, srcDir, dstFS, dstDir,
 		[]string{"oci-layout", "index.json"})
 }

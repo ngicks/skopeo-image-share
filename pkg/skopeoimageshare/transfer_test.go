@@ -23,16 +23,16 @@ func writeFile(t *testing.T, p string, data []byte) {
 	}
 }
 
-func makeFSPair(t *testing.T) (srcFS, dstFS FS, srcRoot, dstRoot string) {
+func makeFSPair(t *testing.T) (srcFS, dstFS Fs, srcRoot, dstRoot string) {
 	t.Helper()
 	srcRoot = t.TempDir()
 	dstRoot = t.TempDir()
 	var err error
-	srcFS, err = NewLocalFS(srcRoot)
+	srcFS, err = NewLocalFs(srcRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	dstFS, err = NewLocalFS(dstRoot)
+	dstFS, err = NewLocalFs(dstRoot)
 	if err != nil {
 		t.Fatal(err)
 	}

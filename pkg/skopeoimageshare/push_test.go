@@ -33,6 +33,7 @@ func (s *recordingSkopeo) Version(ctx context.Context) (string, error) {
 	}
 	return s.versionRet, nil
 }
+
 func (s *recordingSkopeo) InspectRaw(ctx context.Context, src skopeo.TransportRef) ([]byte, error) {
 	s.inspectCount.Add(1)
 	if data, ok := s.inspectRaw[string(src.Transport)+":"+src.Arg1]; ok {
@@ -40,6 +41,7 @@ func (s *recordingSkopeo) InspectRaw(ctx context.Context, src skopeo.TransportRe
 	}
 	return nil, errors.New("no inspect fixture")
 }
+
 func (s *recordingSkopeo) Copy(ctx context.Context, src, dst skopeo.TransportRef, sharedBlobDir string) error {
 	switch {
 	case dst.Transport == skopeo.TransportOci:
@@ -66,7 +68,7 @@ type fakeRemote struct {
 	readOnly  bool
 	skopeoCli SkopeoLike
 	lister    Lister
-	fs        FS
+	fs        Fs
 	assumeHas DigestSet
 }
 
@@ -75,7 +77,7 @@ func (f *fakeRemote) BaseDir() string                    { return f.baseDir }
 func (f *fakeRemote) Transport() skopeo.Transport        { return f.transport }
 func (f *fakeRemote) OCIPath() string                    { return f.ociPath }
 func (f *fakeRemote) Skopeo() SkopeoLike                 { return f.skopeoCli }
-func (f *fakeRemote) FS() FS                             { return f.fs }
+func (f *fakeRemote) FS() Fs                             { return f.fs }
 func (f *fakeRemote) Lister() Lister                     { return f.lister }
 func (f *fakeRemote) ReadOnly() bool                     { return f.readOnly }
 func (f *fakeRemote) Validate(ctx context.Context) error { return nil }
@@ -85,6 +87,7 @@ func (f *fakeRemote) Dump(ctx context.Context, ref imageref.ImageRef) (string, e
 	}
 	return dumpRemote(ctx, f.transport, f.baseDir, f.skopeoCli, f.fs, ref)
 }
+
 func (f *fakeRemote) List(ctx context.Context) (DigestSet, error) {
 	if f.assumeHas != nil {
 		return f.assumeHas, nil
@@ -94,16 +97,16 @@ func (f *fakeRemote) List(ctx context.Context) (DigestSet, error) {
 
 // newSides constructs local + remote FSes (both osfs.NewUnrooted
 // rooted at separate temp dirs) for orchestrator tests.
-func newSides(t *testing.T) (localFS, remoteFS FS, localBase, remoteBase string) {
+func newSides(t *testing.T) (localFS, remoteFS Fs, localBase, remoteBase string) {
 	t.Helper()
 	localBase = t.TempDir()
 	remoteBase = t.TempDir()
 	var err error
-	localFS, err = NewLocalFS(localBase)
+	localFS, err = NewLocalFs(localBase)
 	if err != nil {
 		t.Fatal(err)
 	}
-	remoteFS, err = NewLocalFS(remoteBase)
+	remoteFS, err = NewLocalFs(remoteBase)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +131,7 @@ func seedDump(t *testing.T, tagDir, shareDir string) (manifestDigest string) {
 	return manifestDigest
 }
 
-func newLocal(localFS FS, base string, sk SkopeoLike) *Local {
+func newLocal(localFS Fs, base string, sk SkopeoLike) *Local {
 	return &Local{
 		baseDir:   base,
 		transport: skopeo.TransportContainersStorage,

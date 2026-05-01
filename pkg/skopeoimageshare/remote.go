@@ -47,7 +47,7 @@ type Remote interface {
 	// Skopeo is the skopeo wrapper bound to this peer.
 	Skopeo() SkopeoLike
 	// FS is rooted at BaseDir; orchestrator-facing paths are FS-relative.
-	FS() FS
+	FS() Fs
 	// Lister is the docker / podman wrapper for live image
 	// enumeration. Returns nil for [skopeo.TransportOci].
 	Lister() Lister
@@ -106,7 +106,7 @@ type sshRemote struct {
 
 	skopeoCli SkopeoLike
 	lister    Lister
-	fs        FS
+	fs        Fs
 
 	validateOnce sync.Once
 	validateErr  error
@@ -293,7 +293,7 @@ func (r *sshRemote) OCIPath() string { return r.ociPath }
 func (r *sshRemote) Skopeo() SkopeoLike { return r.skopeoCli }
 
 // FS implements [Remote].
-func (r *sshRemote) FS() FS { return r.fs }
+func (r *sshRemote) FS() Fs { return r.fs }
 
 // Lister implements [Remote].
 func (r *sshRemote) Lister() Lister { return r.lister }
@@ -330,7 +330,7 @@ func (r *sshRemote) List(ctx context.Context) (DigestSet, error) {
 // [Local.Dump] but slash-normalizes the absolute paths handed to the
 // remote skopeo CLI (peer's filesystem is POSIX even when the host
 // running this binary is not).
-func dumpRemote(ctx context.Context, transport skopeo.Transport, baseDir string, sk SkopeoLike, fs FS, ref imageref.ImageRef) (string, error) {
+func dumpRemote(ctx context.Context, transport skopeo.Transport, baseDir string, sk SkopeoLike, fs Fs, ref imageref.ImageRef) (string, error) {
 	store := NewStore(baseDir)
 	tagDirNative, err := store.DumpDir(ref)
 	if err != nil {
@@ -356,11 +356,11 @@ func dumpRemote(ctx context.Context, transport skopeo.Transport, baseDir string,
 }
 
 // listAt dispatches to [Enumerate] using the right lister for transport.
-func listAt(ctx context.Context, transport skopeo.Transport, sk SkopeoLike, fs FS, baseDir string, lister Lister) (DigestSet, error) {
+func listAt(ctx context.Context, transport skopeo.Transport, sk SkopeoLike, fs Fs, baseDir string, lister Lister) (DigestSet, error) {
 	cfg := EnumerateConfig{
 		Transport: transport,
 		Skopeo:    sk,
-		FS:        fs,
+		Fs:        fs,
 		BaseDir:   baseDir,
 	}
 	switch transport {

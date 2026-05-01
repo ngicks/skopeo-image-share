@@ -13,21 +13,21 @@ import (
 	"github.com/ngicks/skopeo-image-share/pkg/sftpfs"
 )
 
-// FS is the filesystem abstraction the orchestrator drives. It is a
+// Fs is the filesystem abstraction the orchestrator drives. It is a
 // strict alias of [vroot.Fs] — the local side is satisfied by
 // [*osfs.Unrooted] (rooted at the application's base data dir, with
 // relative paths) and the remote side by [*sftpfs.SftpFs] (rooted at
 // the peer's base, with relative paths internally translated to
 // absolute SFTP paths).
-type FS = vroot.Fs
+type Fs = vroot.Fs
 
 // File is the per-file shape — alias of [vroot.File].
 type File = vroot.File
 
-// NewLocalFS returns a [FS] rooted at base (the application's data
+// NewLocalFs returns a [Fs] rooted at base (the application's data
 // dir on this machine). All paths passed to its methods are relative
 // to base.
-func NewLocalFS(base string) (FS, error) {
+func NewLocalFs(base string) (Fs, error) {
 	if err := os.MkdirAll(base, 0o755); err != nil {
 		return nil, fmt.Errorf("local fs: mkdir base: %w", err)
 	}
@@ -40,7 +40,7 @@ func NewLocalFS(base string) (FS, error) {
 
 // SafeWrite atomically writes data to p (relative to f's root) via
 // [fsutil.SafeWriteOption].
-func SafeWrite(f FS, p string, data []byte) error {
+func SafeWrite(f Fs, p string, data []byte) error {
 	if err := f.MkdirAll(parentDir(p), 0o755); err != nil {
 		return fmt.Errorf("safewrite: mkdir parent: %w", err)
 	}
@@ -62,20 +62,20 @@ func SafeWrite(f FS, p string, data []byte) error {
 // readAllVia opens p for reading and returns its full contents. Used
 // for small files (manifest blobs, index.json, oci-layout). Wraps
 // vroot.ReadFile.
-func readAllVia(f FS, p string) ([]byte, error) {
+func readAllVia(f Fs, p string) ([]byte, error) {
 	return vroot.ReadFile(f, p)
 }
 
 // readDirVia is the FS-level ReadDir helper. It wraps vroot.ReadDir,
 // which uses the optional ReadDirFs fast path when available
 // (*sftpfs.SftpFs exposes one) and falls back to OpenFile + File.ReadDir.
-func readDirVia(f FS, p string) ([]fs.DirEntry, error) {
+func readDirVia(f Fs, p string) ([]fs.DirEntry, error) {
 	return vroot.ReadDir(f, p)
 }
 
 // statSize is a small adapter that turns Stat's signature into
 // "(size, exists, err)". Missing files are not treated as errors.
-func statSize(f FS, p string) (int64, bool, error) {
+func statSize(f Fs, p string) (int64, bool, error) {
 	fi, err := f.Stat(p)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, os.ErrNotExist) {

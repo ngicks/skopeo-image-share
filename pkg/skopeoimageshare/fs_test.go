@@ -6,10 +6,10 @@ import (
 	"testing"
 )
 
-func mustFS(t *testing.T) (FS, string) {
+func mustFS(t *testing.T) (Fs, string) {
 	t.Helper()
 	dir := t.TempDir()
-	fs, err := NewLocalFS(dir)
+	fs, err := NewLocalFs(dir)
 	if err != nil {
 		t.Fatal(err)
 	}

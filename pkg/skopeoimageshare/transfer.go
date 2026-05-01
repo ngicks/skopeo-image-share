@@ -34,7 +34,7 @@ const CopyBufferSize = 256 * 1024
 // Cancellation is per-Read via [stream.NewCancellable]; a blocked
 // Write cannot be unblocked from this function — the caller must close
 // the underlying SFTP client to abort a stuck Write.
-func TransferBlob(ctx context.Context, srcFS FS, srcPath string, dstFS FS, dstPath string, expectedSize int64) error {
+func TransferBlob(ctx context.Context, srcFS Fs, srcPath string, dstFS Fs, dstPath string, expectedSize int64) error {
 	logger := contextkey.ValueSlogLoggerDefault(ctx)
 	logger.LogAttrs(ctx, slog.LevelDebug, "transfer.start",
 		slog.String("src", srcPath),
@@ -139,7 +139,7 @@ func TransferBlob(ctx context.Context, srcFS FS, srcPath string, dstFS FS, dstPa
 //
 // `entries` is the list of file basenames to ship (e.g. ["index.json",
 // "oci-layout"]); pass exactly the files you want.
-func CopyTagDirSmallFiles(ctx context.Context, srcFS FS, srcDir string, dstFS FS, dstDir string, entries []string) error {
+func CopyTagDirSmallFiles(ctx context.Context, srcFS Fs, srcDir string, dstFS Fs, dstDir string, entries []string) error {
 	if err := dstFS.MkdirAll(dstDir, 0o755); err != nil {
 		return fmt.Errorf("copytagdir: mkdir %s: %w", dstDir, err)
 	}

@@ -42,7 +42,7 @@ func TestEnumerate_ContainersStorage(t *testing.T) {
 	must(t, os.MkdirAll(filepath.Join(tmp, "share", "sha256"), 0o755))
 	must(t, os.WriteFile(filepath.Join(tmp, "share", "sha256", shareBlob), []byte("loose"), 0o644))
 
-	fs, err := NewLocalFS(tmp)
+	fs, err := NewLocalFs(tmp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestEnumerate_ContainersStorage(t *testing.T) {
 			},
 		},
 		Podman:  &fakeLister{refs: []string{"foo/bar:1"}},
-		FS:      fs,
+		Fs:      fs,
 		BaseDir: tmp,
 	}
 	got, err := Enumerate(context.Background(), cfg)
@@ -80,7 +80,7 @@ func TestEnumerate_ContainersStorage(t *testing.T) {
 func TestEnumerate_DockerDaemon_SkipsBadInspect(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
-	fs, err := NewLocalFS(tmp)
+	fs, err := NewLocalFs(tmp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestEnumerate_DockerDaemon_SkipsBadInspect(t *testing.T) {
 		Transport: skopeo.TransportDockerDaemon,
 		Docker:    &fakeLister{refs: []string{"only:1"}},
 		Skopeo:    &fakeSkopeoInspector{},
-		FS:        fs,
+		Fs:        fs,
 		BaseDir:   tmp,
 	}
 	got, err := Enumerate(context.Background(), cfg)
@@ -122,13 +122,13 @@ func TestEnumerate_OCI_FilesystemWalk(t *testing.T) {
 	must(t, os.WriteFile(filepath.Join(shareSha, manifestHex), []byte(ociManifestFixture), 0o644))
 	must(t, os.WriteFile(filepath.Join(shareSha, looseHex), []byte("loose"), 0o644))
 
-	fs, err := NewLocalFS(tmp)
+	fs, err := NewLocalFs(tmp)
 	if err != nil {
 		t.Fatal(err)
 	}
 	cfg := EnumerateConfig{
 		Transport: skopeo.TransportOci,
-		FS:        fs,
+		Fs:        fs,
 		BaseDir:   tmp,
 	}
 	got, err := Enumerate(context.Background(), cfg)
@@ -160,11 +160,11 @@ func TestEnumerate_BadTransport(t *testing.T) {
 func TestEnumerate_OCI_MissingBaseDir_NoError(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
-	fs, err := NewLocalFS(tmp)
+	fs, err := NewLocalFs(tmp)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := EnumerateConfig{Transport: skopeo.TransportOci, FS: fs, BaseDir: tmp}
+	cfg := EnumerateConfig{Transport: skopeo.TransportOci, Fs: fs, BaseDir: tmp}
 	got, err := Enumerate(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -173,7 +173,6 @@ func TestEnumerate_OCI_MissingBaseDir_NoError(t *testing.T) {
 		t.Errorf("got %v, want empty", got.Slice())
 	}
 }
-
 
 func must(t *testing.T, err error) {
 	t.Helper()
