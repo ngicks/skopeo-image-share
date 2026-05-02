@@ -10,40 +10,34 @@ import (
 )
 
 var dumpCmd = &cobra.Command{
-	Use:   "dump",
+	Use:   "dump IMAGE [IMAGE...]",
 	Short: "Dump local images into the on-disk OCI store layout.",
-	Args:  cobra.ArbitraryArgs,
+	Args:  cobra.MinimumNArgs(1),
 	RunE:  runDump,
 }
 
 var dumpFlags struct {
-	images         []string
 	localTransport string
 	localPath      string
-	dataDir        string
+	localDumpDir   string
 }
 
 func init() {
 	rootCmd.AddCommand(dumpCmd)
 
 	f := dumpCmd.Flags()
-	f.StringSliceVar(&dumpFlags.images, "image", nil, "image ref to dump (repeatable)")
 	f.StringVar(&dumpFlags.localTransport, "local-transport", "containers-storage", "containers-storage|docker-daemon|oci")
 	f.StringVar(&dumpFlags.localPath, "local-path", "", "local oci: dir (only when --local-transport=oci)")
-	f.StringVar(&dumpFlags.dataDir, "data-dir", "", "override $XDG_DATA_HOME data dir")
+	f.StringVar(&dumpFlags.localDumpDir, "local-dumpdir", "",
+		"base of the local on-disk store layout; "+
+			"when empty, falls back to ${XDG_DATA_HOME:-$HOME/.local/share}/skopeo-image-share")
 }
 
 func runDump(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
-	if len(dumpFlags.images) == 0 && len(args) == 0 {
-		return fmt.Errorf("no images: use --image (repeatable) or positional args")
-	}
-	images := append([]string(nil), dumpFlags.images...)
-	images = append(images, args...)
-
 	local, err := skopeoimageshare.NewLocal(ctx, skopeoimageshare.LocalConfig{
-		BaseDir:   dumpFlags.dataDir,
+		BaseDir:   dumpFlags.localDumpDir,
 		Transport: skopeo.Transport(dumpFlags.localTransport),
 		OCIPath:   dumpFlags.localPath,
 	})
@@ -52,7 +46,7 @@ func runDump(cmd *cobra.Command, args []string) error {
 	}
 
 	var failed int
-	for _, raw := range images {
+	for _, raw := range args {
 		ref, err := imageref.Parse(raw)
 		if err != nil {
 			fmt.Fprintf(cmd.OutOrStdout(), "%s ERROR: %v\n", raw, err)

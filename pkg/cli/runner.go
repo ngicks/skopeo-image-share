@@ -16,43 +16,43 @@ import (
 	"github.com/ngicks/go-common/contextkey"
 )
 
-// Runner runs an external command argv (excluding argv[0]) and
-// returns its captured stdout. Implementations are responsible for
-// argv redaction in logs and for error wrapping (typically
-// [*CommandError]).
+// Runner runs an external command and returns its captured stdout.
+// argv is the full command line including argv[0] (the executable
+// name). Implementations are responsible for argv redaction in logs
+// and for error wrapping (typically [*CommandError]).
 type Runner interface {
 	// Run executes argv and returns the captured stdout. argv[0] is
-	// the "logical" subcommand list — the implementation owns choice
-	// of executable name, working directory, env, etc.
+	// the executable; argv[1:] are its arguments.
 	Run(ctx context.Context, argv []string) ([]byte, error)
 }
 
 // LocalRunner is a [Runner] backed by [exec.CommandContext]. The
-// exe name is the binary on $PATH (e.g. "skopeo", "podman",
-// "docker").
+// caller passes the full argv on each Run; argv[0] is looked up on
+// $PATH.
 type LocalRunner struct {
-	Exe string
 	// StderrTailBytes caps how much trailing stderr is included in
 	// the returned [*CommandError] on non-zero exit. Default 4096.
 	StderrTailBytes int
 }
 
-// NewLocalRunner returns a [LocalRunner] for exe (looked up in $PATH
-// at process invocation time).
-func NewLocalRunner(exe string) *LocalRunner {
-	return &LocalRunner{Exe: exe, StderrTailBytes: 4096}
+// NewLocalRunner returns a [LocalRunner].
+func NewLocalRunner() *LocalRunner {
+	return &LocalRunner{StderrTailBytes: 4096}
 }
 
-// Run implements [Runner].
+// Run implements [Runner]. argv[0] is the executable; argv[1:] are
+// its arguments. argv must be non-empty.
 func (r *LocalRunner) Run(ctx context.Context, argv []string) ([]byte, error) {
-	full := append([]string{r.Exe}, argv...)
+	if len(argv) == 0 {
+		return nil, fmt.Errorf("cli: empty argv")
+	}
 	logger := contextkey.ValueSlogLoggerDefault(ctx)
 	logger.LogAttrs(ctx, slog.LevelDebug, "exec",
-		slog.String("exe", r.Exe),
-		slog.Any("argv", RedactArgv(full)),
+		slog.String("exe", argv[0]),
+		slog.Any("argv", RedactArgv(argv)),
 	)
 
-	cmd := exec.CommandContext(ctx, r.Exe, argv...)
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -60,7 +60,7 @@ func (r *LocalRunner) Run(ctx context.Context, argv []string) ([]byte, error) {
 
 	if stderr.Len() > 0 {
 		logger.LogAttrs(ctx, slog.LevelDebug, "exec stderr",
-			slog.String("exe", r.Exe),
+			slog.String("exe", argv[0]),
 			slog.String("stderr", stderr.String()),
 		)
 	}
@@ -75,7 +75,7 @@ func (r *LocalRunner) Run(ctx context.Context, argv []string) ([]byte, error) {
 			tail = 4096
 		}
 		return stdout.Bytes(), &CommandError{
-			Argv:       RedactArgv(full),
+			Argv:       RedactArgv(argv),
 			ExitCode:   exit,
 			StderrTail: TailBytes(stderr.Bytes(), tail),
 			Err:        err,

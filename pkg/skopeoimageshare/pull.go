@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
-	"time"
 
 	"github.com/ngicks/go-common/contextkey"
 	"github.com/ngicks/skopeo-image-share/pkg/cli/skopeo"
@@ -37,9 +36,6 @@ type PullArgs struct {
 	AssumeLocalHasSet map[string]struct{}
 
 	KeepGoing bool
-
-	Retries       int
-	RetryMaxDelay time.Duration
 }
 
 // PullImageReport is the per-image summary line for pulls.
@@ -233,7 +229,7 @@ func pullOne(
 				return TransferBlob(ctx, peer.FS(), relPath, local.fs, relPath, expectedSize)
 			})
 		}
-		if err := runTransfers(ctx, jobs, args.Retries, args.RetryMaxDelay, digestsSorted, fns); err != nil {
+		if err := runTransfers(ctx, jobs, digestsSorted, fns); err != nil {
 			rep.Err = err
 			return rep
 		}

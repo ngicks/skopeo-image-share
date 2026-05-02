@@ -27,7 +27,7 @@ func TestPodman_ImageLs_Argv(t *testing.T) {
 	if _, err := p.ImageLs(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	want := [][]string{{"image", "ls", "--format", "json"}}
+	want := [][]string{{"podman", "image", "ls", "--format", "json"}}
 	if !reflect.DeepEqual(r.got, want) {
 		t.Errorf("argv: got %v", r.got)
 	}

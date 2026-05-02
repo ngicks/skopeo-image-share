@@ -70,6 +70,9 @@ func appendTransportRefTag(transport Transport, arg1, arg2 string) (string, erro
 // Skopeo is a typed wrapper over the skopeo CLI.
 type Skopeo struct {
 	Runner cli.Runner
+	// Exe is the skopeo executable name (or path). Empty defaults to
+	// "skopeo".
+	Exe string
 
 	// CompressionFormat sets `--dest-compress-format <format>` on
 	// every copy operation when non-empty. Recognized by skopeo:
@@ -81,9 +84,16 @@ type Skopeo struct {
 	CompressionLevel int
 }
 
+func (s *Skopeo) exe() string {
+	if s.Exe == "" {
+		return "skopeo"
+	}
+	return s.Exe
+}
+
 // Version returns the trimmed `skopeo --version` output.
 func (s *Skopeo) Version(ctx context.Context) (string, error) {
-	out, err := s.Runner.Run(ctx, []string{"--version"})
+	out, err := s.Runner.Run(ctx, []string{s.exe(), "--version"})
 	if err != nil {
 		return "", err
 	}
@@ -107,7 +117,7 @@ func (s *Skopeo) Inspect(
 	if err != nil {
 		return nil, err
 	}
-	args := []string{"inspect"}
+	args := []string{s.exe(), "inspect"}
 	if raw {
 		args = append(args, "--raw")
 	}
@@ -138,7 +148,7 @@ func (s *Skopeo) Copy(ctx context.Context, src, dst TransportRef, sharedBlobDir 
 		return fmt.Errorf("src and dst is same: %q", srcStr)
 	}
 
-	argv := []string{"copy"}
+	argv := []string{s.exe(), "copy"}
 	argv = append(argv, s.compressionArgs()...)
 	if sharedBlobDir != "" {
 		switch {

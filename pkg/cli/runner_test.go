@@ -24,8 +24,8 @@ func writeShim(t *testing.T, name, body string) string {
 
 func TestLocalRunner_OK(t *testing.T) {
 	writeShim(t, "fake", `printf "hello stdout"`)
-	r := NewLocalRunner("fake")
-	out, err := r.Run(context.Background(), nil)
+	r := NewLocalRunner()
+	out, err := r.Run(context.Background(), []string{"fake"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,8 +36,8 @@ func TestLocalRunner_OK(t *testing.T) {
 
 func TestLocalRunner_Error(t *testing.T) {
 	writeShim(t, "fake", `printf "boom\n" >&2; exit 7`)
-	r := NewLocalRunner("fake")
-	_, err := r.Run(context.Background(), []string{"--something"})
+	r := NewLocalRunner()
+	_, err := r.Run(context.Background(), []string{"fake", "--something"})
 	if err == nil {
 		t.Fatal("expected error")
 	}

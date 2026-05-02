@@ -26,7 +26,7 @@ type DirV1 interface {
 	// ImageLayout parses `oci-layout` and returns the typed [v1.ImageLayout].
 	ImageLayout() (v1.ImageLayout, error)
 	// Blob reads the blob with the given digest from the dir's blob
-	// pool. Returns [os.ErrNotExist] when missing.
+	// pool. Returns [fs.ErrNotExist] when missing.
 	Blob(d digest.Digest) ([]byte, error)
 }
 

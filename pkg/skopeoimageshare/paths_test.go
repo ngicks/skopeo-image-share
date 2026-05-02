@@ -41,12 +41,6 @@ func TestStorePaths(t *testing.T) {
 	if got, want := st.ShareDir(), filepath.Join(base, "share"); got != want {
 		t.Errorf("ShareDir: got %q, want %q", got, want)
 	}
-	if got, want := st.TmpDir(), filepath.Join(base, "tmp"); got != want {
-		t.Errorf("TmpDir: got %q, want %q", got, want)
-	}
-	if got, want := st.LogDir(), filepath.Join(base, "log"); got != want {
-		t.Errorf("LogDir: got %q, want %q", got, want)
-	}
 }
 
 func TestStoreDumpDir(t *testing.T) {
@@ -74,10 +68,8 @@ func TestStoreEnsureLayoutIdempotent(t *testing.T) {
 			t.Fatalf("EnsureLayout pass %d: %v", i, err)
 		}
 	}
-	for _, d := range []string{st.ShareDir(), st.TmpDir(), st.LogDir()} {
-		if fi, err := os.Stat(d); err != nil || !fi.IsDir() {
-			t.Errorf("dir %q: stat=%v, isDir=%v", d, err, fi != nil && fi.IsDir())
-		}
+	if fi, err := os.Stat(st.ShareDir()); err != nil || !fi.IsDir() {
+		t.Errorf("dir %q: stat=%v, isDir=%v", st.ShareDir(), err, fi != nil && fi.IsDir())
 	}
 }
 

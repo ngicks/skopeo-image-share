@@ -54,7 +54,7 @@ func TestDocker_ImageLs_Argv(t *testing.T) {
 	if _, err := d.ImageLs(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	want := [][]string{{"image", "ls", "--format", "json"}}
+	want := [][]string{{"docker", "image", "ls", "--format", "json"}}
 	if !reflect.DeepEqual(r.got, want) {
 		t.Errorf("argv: got %v", r.got)
 	}

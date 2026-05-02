@@ -20,14 +20,24 @@ import (
 // Docker is a typed wrapper over the docker CLI.
 type Docker struct {
 	Runner cli.Runner
+	// Exe is the docker executable name (or path). Empty defaults to
+	// "docker".
+	Exe string
 }
 
 // NewDocker returns a [Docker] driving r.
 func NewDocker(r cli.Runner) *Docker { return &Docker{Runner: r} }
 
+func (d *Docker) exe() string {
+	if d.Exe == "" {
+		return "docker"
+	}
+	return d.Exe
+}
+
 // Version returns the trimmed `docker --version` output.
 func (d *Docker) Version(ctx context.Context) (string, error) {
-	out, err := d.Runner.Run(ctx, []string{"--version"})
+	out, err := d.Runner.Run(ctx, []string{d.exe(), "--version"})
 	if err != nil {
 		return "", err
 	}
@@ -55,7 +65,7 @@ type dockerInspectImage struct {
 // reconstructed as <Repository>:<Tag>; entries with `<none>`
 // repo/tag (Docker's marker for dangling images) are skipped.
 func (d *Docker) ImageLs(ctx context.Context) ([]string, error) {
-	out, err := d.Runner.Run(ctx, []string{"image", "ls", "--format", "json"})
+	out, err := d.Runner.Run(ctx, []string{d.exe(), "image", "ls", "--format", "json"})
 	if err != nil {
 		return nil, err
 	}

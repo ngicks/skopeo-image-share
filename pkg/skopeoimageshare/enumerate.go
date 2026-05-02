@@ -256,7 +256,7 @@ func walkDumpDirs(fsys vroot.Fs, root string) ([]string, error) {
 			continue
 		}
 		name := h.Name()
-		if name == "share" || name == "tmp" || name == "log" {
+		if name == "share" {
 			continue
 		}
 		var prefix string

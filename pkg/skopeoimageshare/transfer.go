@@ -11,13 +11,11 @@ import (
 	"os"
 	"path"
 	"sync"
-	"time"
 
 	"github.com/ngicks/go-common/contextkey"
 	"github.com/ngicks/go-fsys-helper/fsutil"
 	"github.com/ngicks/go-fsys-helper/stream"
 	"github.com/ngicks/go-fsys-helper/vroot"
-	"github.com/ngicks/skopeo-image-share/pkg/cli"
 )
 
 // CopyBufferSize is the io.CopyBuffer chunk size used when streaming
@@ -25,13 +23,6 @@ import (
 // payloads to ~32 KiB anyway, but a larger buffer reduces syscall
 // overhead on the read side).
 const CopyBufferSize = 256 * 1024
-
-// Default retry knobs used by [runTransfers] when args pass zero values.
-const (
-	DefaultRetries      = 5
-	DefaultInitialDelay = 1 * time.Second
-	DefaultMaxDelay     = 30 * time.Second
-)
 
 // TransferBlob copies srcPath via srcFS to dstPath via dstFS with
 // .part-based resume and atomic rename, taking the source size as the
@@ -77,7 +68,10 @@ func TransferBlob(ctx context.Context, srcFS vroot.Fs, srcPath string, dstFS vro
 	var startAt int64
 	if fi, err := dstFS.Stat(part); err == nil {
 		if fi.Size() > expectedSize {
-			logger.LogAttrs(ctx, slog.LevelInfo, "transfer.part-corrupt-restart",
+			logger.LogAttrs(
+				ctx,
+				slog.LevelInfo,
+				"transfer.part-corrupt-restart",
 				slog.String("part", part),
 				slog.Int64("partSize", fi.Size()),
 				slog.Int64("expected", expectedSize),
@@ -184,33 +178,21 @@ func CopyTagDirSmallFiles(ctx context.Context, srcFS vroot.Fs, srcDir string, ds
 }
 
 // runTransfers runs each fn concurrently with at most parallelism in
-// flight, retrying transient errors with exponential backoff capped at
-// maxDelay. ids[i] labels fns[i] in the joined error.
+// flight. ids[i] labels fns[i] in the joined error. The first per-fn
+// failure is recorded and the function does not retry — callers that
+// want retries should wrap fn themselves.
 //
-// Zero values: parallelism ≤ 0 → 1; retries ≤ 0 → [DefaultRetries];
-// maxDelay ≤ 0 → [DefaultMaxDelay].
-//
-// A failure of [cli.CommandError] or [io.EOF] is treated as terminal —
-// no retry is attempted; everything else is retried until the budget
-// is exhausted.
+// Zero values: parallelism ≤ 0 → 1.
 func runTransfers(
 	ctx context.Context,
-	parallelism, retries int,
-	maxDelay time.Duration,
+	parallelism int,
 	ids []string,
 	fns []func(context.Context) error,
 ) error {
 	if parallelism <= 0 {
 		parallelism = 1
 	}
-	if retries <= 0 {
-		retries = DefaultRetries
-	}
-	if maxDelay <= 0 {
-		maxDelay = DefaultMaxDelay
-	}
 
-	logger := contextkey.ValueSlogLoggerDefault(ctx)
 	sem := make(chan struct{}, parallelism)
 	var (
 		wg   sync.WaitGroup
@@ -226,61 +208,13 @@ func runTransfers(
 		}
 		wg.Go(func() {
 			defer func() { <-sem }()
-			delay := DefaultInitialDelay
-			var lastErr error
-			for attempt := 0; attempt <= retries; attempt++ {
-				if err := ctx.Err(); err != nil {
-					lastErr = err
-					break
-				}
-				lastErr = fn(ctx)
-				if lastErr == nil {
-					return
-				}
-				if !isRetryable(lastErr) || attempt == retries {
-					break
-				}
-				logger.LogAttrs(ctx, slog.LevelWarn, "transfer.retry",
-					slog.String("id", ids[i]),
-					slog.Int("attempt", attempt+1),
-					slog.Duration("delay", delay),
-					slog.Any("err", lastErr),
-				)
-				t := time.NewTimer(delay)
-				select {
-				case <-ctx.Done():
-					t.Stop()
-					lastErr = ctx.Err()
-					mu.Lock()
-					errs = append(errs, fmt.Errorf("%s: %w", ids[i], lastErr))
-					mu.Unlock()
-					return
-				case <-t.C:
-				}
-				if delay *= 2; delay > maxDelay {
-					delay = maxDelay
-				}
+			if err := fn(ctx); err != nil {
+				mu.Lock()
+				errs = append(errs, fmt.Errorf("%s: %w", ids[i], err))
+				mu.Unlock()
 			}
-			mu.Lock()
-			errs = append(errs, fmt.Errorf("%s: %w", ids[i], lastErr))
-			mu.Unlock()
 		})
 	}
 	wg.Wait()
 	return errors.Join(errs...)
-}
-
-// isRetryable: every error is retryable except [io.EOF] (which
-// shouldn't be surfaced from TransferBlob anyway) and [cli.CommandError]
-// — non-zero exits from skopeo are program-logic failures, not network
-// glitches, so don't burn retry budget on them.
-func isRetryable(err error) bool {
-	if errors.Is(err, io.EOF) {
-		return false
-	}
-	var ce *cli.CommandError
-	if errors.As(err, &ce) {
-		return false
-	}
-	return true
 }

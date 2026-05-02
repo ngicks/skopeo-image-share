@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"path/filepath"
 	"sort"
-	"time"
 
 	"github.com/ngicks/go-common/contextkey"
 	"github.com/ngicks/go-fsys-helper/vroot"
@@ -47,11 +46,6 @@ type PushArgs struct {
 	// failures and exits non-zero with a final failure count, rather
 	// than short-circuiting on the first error.
 	KeepGoing bool
-
-	// Retries is per-blob upload retry count. 0 → DefaultRetries.
-	Retries int
-	// RetryMaxDelay caps exponential backoff. 0 → DefaultMaxDelay.
-	RetryMaxDelay time.Duration
 }
 
 // SkopeoLike abstracts [*skopeo.Skopeo] so tests can substitute a fake.
@@ -265,7 +259,7 @@ func pushOne(
 				return TransferBlob(ctx, local.fs, relPath, peer.FS(), relPath, expectedSize)
 			})
 		}
-		if err := runTransfers(ctx, jobs, args.Retries, args.RetryMaxDelay, digestsSorted, fns); err != nil {
+		if err := runTransfers(ctx, jobs, digestsSorted, fns); err != nil {
 			rep.Err = err
 			return rep
 		}

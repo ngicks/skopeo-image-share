@@ -22,8 +22,6 @@ const AppDirName = "skopeo-image-share"
 //	  <host>/<repo-path>/_tags/<tag>/        # per-image oci: dump
 //	  <host>/<repo-path>/_digests/<hex>/     # digest-pinned variant
 //	  share/                                 # shared blob pool
-//	  tmp/                                   # scratch
-//	  log/                                   # ndjson run logs
 type Store struct {
 	Base string
 }
@@ -46,12 +44,6 @@ func DefaultBaseDir() (string, error) {
 
 // ShareDir is the shared blob pool directory.
 func (s *Store) ShareDir() string { return filepath.Join(s.Base, "share") }
-
-// TmpDir is the per-invocation scratch directory.
-func (s *Store) TmpDir() string { return filepath.Join(s.Base, "tmp") }
-
-// LogDir is the optional ndjson run-log directory.
-func (s *Store) LogDir() string { return filepath.Join(s.Base, "log") }
 
 // TagDir returns the tag-pinned dump directory for r. If r is not
 // tag-pinned, it returns "".
@@ -83,9 +75,9 @@ func (s *Store) DumpDir(r imageref.ImageRef) (string, error) {
 	}
 }
 
-// EnsureLayout creates ShareDir, TmpDir, LogDir if missing. Idempotent.
+// EnsureLayout creates ShareDir if missing. Idempotent.
 func (s *Store) EnsureLayout(ctx context.Context) error {
-	for _, d := range []string{s.Base, s.ShareDir(), s.TmpDir(), s.LogDir()} {
+	for _, d := range []string{s.Base, s.ShareDir()} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return fmt.Errorf("store: mkdir %s: %w", d, err)
 		}

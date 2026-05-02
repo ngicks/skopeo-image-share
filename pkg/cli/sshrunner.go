@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
 	"os/exec"
 	"strings"
@@ -21,35 +22,30 @@ import (
 // before transmission so meta-characters are inert.
 type SshRunner struct {
 	Target ssh.Target
-	// Exe, if non-empty, is prepended to argv on each Run. Lets a
-	// caller bind a runner to a specific remote binary (e.g. "skopeo",
-	// "podman", "docker"). When empty, argv is sent through verbatim.
-	Exe string
 	// StderrTailBytes caps how much trailing stderr is included in
 	// the returned [*CommandError] on non-zero exit. Default 4096.
 	StderrTailBytes int
 }
 
-// NewSshRunner returns an [SshRunner] for target. exe is prepended to
-// argv on each Run when non-empty.
-func NewSshRunner(target ssh.Target, exe string) *SshRunner {
-	return &SshRunner{Target: target, Exe: exe, StderrTailBytes: 4096}
+// NewSshRunner returns an [SshRunner] for target.
+func NewSshRunner(target ssh.Target) *SshRunner {
+	return &SshRunner{Target: target, StderrTailBytes: 4096}
 }
 
-// Run implements [Runner].
+// Run implements [Runner]. argv is sent verbatim to the remote shell;
+// argv[0] is the remote executable. argv must be non-empty.
 func (r *SshRunner) Run(ctx context.Context, argv []string) ([]byte, error) {
-	full := argv
-	if r.Exe != "" {
-		full = append([]string{r.Exe}, argv...)
+	if len(argv) == 0 {
+		return nil, fmt.Errorf("cli: empty argv")
 	}
 
 	logger := contextkey.ValueSlogLoggerDefault(ctx)
 	logger.LogAttrs(ctx, slog.LevelDebug, "ssh.exec",
-		slog.Any("argv", RedactArgv(full)),
+		slog.Any("argv", RedactArgv(argv)),
 		slog.String("host", r.Target.String()),
 	)
 
-	sshArgs := append(ssh.BinaryArgs(r.Target), "--", shellQuote(full))
+	sshArgs := append(ssh.BinaryArgs(r.Target), "--", shellQuote(argv))
 	cmd := exec.CommandContext(ctx, "ssh", sshArgs...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -73,7 +69,7 @@ func (r *SshRunner) Run(ctx context.Context, argv []string) ([]byte, error) {
 			tail = 4096
 		}
 		return stdout.Bytes(), &CommandError{
-			Argv:       RedactArgv(full),
+			Argv:       RedactArgv(argv),
 			ExitCode:   exit,
 			StderrTail: TailBytes(stderr.Bytes(), tail),
 			Err:        err,

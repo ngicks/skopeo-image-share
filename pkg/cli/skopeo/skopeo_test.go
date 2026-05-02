@@ -38,7 +38,7 @@ func TestSkopeo_Version_TrimsOutput(t *testing.T) {
 	if v != "skopeo version 1.20.0" {
 		t.Errorf("Version = %q", v)
 	}
-	if !reflect.DeepEqual(r.got, [][]string{{"--version"}}) {
+	if !reflect.DeepEqual(r.got, [][]string{{"skopeo", "--version"}}) {
 		t.Errorf("argv: got %v", r.got)
 	}
 }
@@ -54,7 +54,7 @@ func TestSkopeo_Inspect_Raw_Argv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := [][]string{{"inspect", "--raw", "containers-storage:myimg:latest"}}
+	want := [][]string{{"skopeo", "inspect", "--raw", "containers-storage:myimg:latest"}}
 	if !reflect.DeepEqual(r.got, want) {
 		t.Errorf("argv: got %v, want %v", r.got, want)
 	}
@@ -71,7 +71,7 @@ func TestSkopeo_Inspect_NoRaw_Argv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := [][]string{{"inspect", "containers-storage:myimg:latest"}}
+	want := [][]string{{"skopeo", "inspect", "containers-storage:myimg:latest"}}
 	if !reflect.DeepEqual(r.got, want) {
 		t.Errorf("argv: got %v, want %v", r.got, want)
 	}
@@ -87,7 +87,7 @@ func TestSkopeo_Inspect_SharedBlobDir_Argv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := [][]string{{"inspect", "--raw", "--shared-blob-dir", "/tmp/share", "oci:/tmp/oci/_tags/v1:ghcr.io/a/b:c"}}
+	want := [][]string{{"skopeo", "inspect", "--raw", "--shared-blob-dir", "/tmp/share", "oci:/tmp/oci/_tags/v1:ghcr.io/a/b:c"}}
 	if !reflect.DeepEqual(r.got, want) {
 		t.Errorf("argv: got %v, want %v", r.got, want)
 	}
@@ -103,7 +103,7 @@ func TestSkopeo_Inspect_ExtraArgs_Argv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := [][]string{{"inspect", "--config", "--format", "{{.Digest}}", "containers-storage:myimg:latest"}}
+	want := [][]string{{"skopeo", "inspect", "--config", "--format", "{{.Digest}}", "containers-storage:myimg:latest"}}
 	if !reflect.DeepEqual(r.got, want) {
 		t.Errorf("argv: got %v, want %v", r.got, want)
 	}
@@ -121,7 +121,7 @@ func TestSkopeo_Copy_ToOCI_Argv(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := [][]string{{
-		"copy",
+		"skopeo", "copy",
 		"--dest-shared-blob-dir", "/tmp/share",
 		"containers-storage:ghcr.io/a/b:c",
 		"oci:/tmp/oci/_tags/c:ghcr.io/a/b:c",
@@ -143,7 +143,7 @@ func TestSkopeo_Copy_FromOCI_Argv(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := [][]string{{
-		"copy",
+		"skopeo", "copy",
 		"--src-shared-blob-dir", "/tmp/share",
 		"oci:/tmp/oci/_tags/c:ghcr.io/a/b:c",
 		"containers-storage:ghcr.io/a/b:c",
@@ -165,7 +165,7 @@ func TestSkopeo_Copy_NoShareDir_OmitsFlag(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := [][]string{{
-		"copy",
+		"skopeo", "copy",
 		"docker://registry/foo:latest",
 		"containers-storage:registry/foo:latest",
 	}}
@@ -214,7 +214,7 @@ func TestSkopeo_CompressionArgs(t *testing.T) {
 	}
 	want := [][]string{
 		{
-			"copy",
+			"skopeo", "copy",
 			"--dest-compress-format", "zstd",
 			"--dest-compress-level", "19",
 			"--dest-shared-blob-dir", "/tmp/share",
@@ -222,7 +222,7 @@ func TestSkopeo_CompressionArgs(t *testing.T) {
 			"oci:/tmp/oci/_tags/c:ghcr.io/a/b:c",
 		},
 		{
-			"copy",
+			"skopeo", "copy",
 			"--dest-compress-format", "zstd",
 			"--dest-compress-level", "19",
 			"--src-shared-blob-dir", "/tmp/share",

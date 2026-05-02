@@ -110,7 +110,7 @@ func run() error {
 	}
 
 	sk := &skopeo.Skopeo{
-		Runner:            cli.NewLocalRunner("skopeo"),
+		Runner:            cli.NewLocalRunner(),
 		CompressionFormat: "zstd",
 		CompressionLevel:  10,
 	}

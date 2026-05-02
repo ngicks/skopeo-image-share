@@ -72,14 +72,14 @@ func NewLocal(ctx context.Context, cfg LocalConfig) (*Local, error) {
 		baseDir:   base,
 		transport: cfg.Transport,
 		ociPath:   cfg.OCIPath,
-		skopeoCli: &skopeo.Skopeo{Runner: cli.NewLocalRunner("skopeo")},
+		skopeoCli: &skopeo.Skopeo{Runner: cli.NewLocalRunner()},
 		fs:        fs,
 	}
 	switch cfg.Transport {
 	case skopeo.TransportContainersStorage:
-		l.lister = docker.NewPodman(cli.NewLocalRunner("podman"))
+		l.lister = docker.NewPodman(cli.NewLocalRunner())
 	case skopeo.TransportDockerDaemon:
-		l.lister = docker.NewDocker(cli.NewLocalRunner("docker"))
+		l.lister = docker.NewDocker(cli.NewLocalRunner())
 	}
 	return l, nil
 }

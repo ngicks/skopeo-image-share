@@ -143,7 +143,7 @@ func NewRemote(ctx context.Context, cfg RemoteConfig) (Remote, error) {
 		transport: cfg.Transport,
 		ociPath:   cfg.OCIPath,
 		target:    cfg.Target,
-		runner:    cli.NewSshRunner(cfg.Target, ""),
+		runner:    cli.NewSshRunner(cfg.Target),
 		sftpCmd:   cmd,
 		sftp:      sftpC,
 	}
@@ -156,12 +156,12 @@ func NewRemote(ctx context.Context, cfg RemoteConfig) (Remote, error) {
 	}
 	r.baseDir = base
 	r.fs = sftpfs.New(sftpC, base)
-	r.skopeoCli = &skopeo.Skopeo{Runner: cli.NewSshRunner(cfg.Target, "skopeo")}
+	r.skopeoCli = &skopeo.Skopeo{Runner: cli.NewSshRunner(cfg.Target)}
 	switch cfg.Transport {
 	case skopeo.TransportContainersStorage:
-		r.lister = docker.NewPodman(cli.NewSshRunner(cfg.Target, "podman"))
+		r.lister = docker.NewPodman(cli.NewSshRunner(cfg.Target))
 	case skopeo.TransportDockerDaemon:
-		r.lister = docker.NewDocker(cli.NewSshRunner(cfg.Target, "docker"))
+		r.lister = docker.NewDocker(cli.NewSshRunner(cfg.Target))
 	}
 	return r, nil
 }
