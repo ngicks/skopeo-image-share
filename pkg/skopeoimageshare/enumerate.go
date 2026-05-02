@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
-	"os"
 	"path"
 
 	"github.com/ngicks/go-common/contextkey"
+	"github.com/ngicks/go-fsys-helper/vroot"
 	"github.com/ngicks/skopeo-image-share/pkg/cli/skopeo"
 	"github.com/ngicks/skopeo-image-share/pkg/ocidir"
 	"github.com/opencontainers/go-digest"
@@ -53,7 +53,7 @@ type EnumerateConfig struct {
 
 	// Fs is the filesystem holding the share/ pool (for all three
 	// transports) and, for OCI, the layout root rooted at BaseDir.
-	Fs Fs
+	Fs vroot.Fs
 
 	// BaseDir is the application's data dir on this side
 	// (`<base>` from PLAN §3). The enumerator unions
@@ -65,7 +65,7 @@ type EnumerateConfig struct {
 // union described by PLAN §4.2: `manifest digests` + `config digests`
 // + `layer digests` reachable from peer refs, plus the filename set of
 // `<peer-base>/share/`.
-func Enumerate(ctx context.Context, cfg EnumerateConfig) (DigestSet, error) {
+func Enumerate(ctx context.Context, cfg EnumerateConfig) (map[string]struct{}, error) {
 	switch cfg.Transport {
 	case skopeo.TransportContainersStorage:
 		return enumerateViaSkopeoInspect(ctx, cfg, cfg.Podman, skopeo.TransportContainersStorage)
@@ -86,7 +86,7 @@ type Lister interface {
 	ImageLs(ctx context.Context) ([]string, error)
 }
 
-func enumerateViaSkopeoInspect(ctx context.Context, cfg EnumerateConfig, lister Lister, transport skopeo.Transport) (DigestSet, error) {
+func enumerateViaSkopeoInspect(ctx context.Context, cfg EnumerateConfig, lister Lister, transport skopeo.Transport) (map[string]struct{}, error) {
 	if lister == nil {
 		return nil, fmt.Errorf("enumerate %s: missing lister", transport)
 	}
@@ -95,7 +95,7 @@ func enumerateViaSkopeoInspect(ctx context.Context, cfg EnumerateConfig, lister 
 	}
 
 	logger := contextkey.ValueSlogLoggerDefault(ctx)
-	out := NewDigestSet()
+	out := map[string]struct{}{}
 
 	refs, err := lister.ImageLs(ctx)
 	if err != nil {
@@ -127,10 +127,10 @@ func enumerateViaSkopeoInspect(ctx context.Context, cfg EnumerateConfig, lister 
 			)
 			continue
 		}
-		out.Add(ocidir.DigestBytes(raw))
-		out.Add(string(man.Config.Digest))
+		out[ocidir.DigestBytes(raw)] = struct{}{}
+		out[string(man.Config.Digest)] = struct{}{}
 		for _, l := range man.Layers {
-			out.Add(string(l.Digest))
+			out[string(l.Digest)] = struct{}{}
 		}
 	}
 
@@ -146,12 +146,12 @@ func enumerateViaSkopeoInspect(ctx context.Context, cfg EnumerateConfig, lister 
 // enumerateOCI walks the on-disk layout under the FS's root, runs
 // the closure walker on every tag/digest dump found, and unions the
 // share pool's filename set.
-func enumerateOCI(ctx context.Context, cfg EnumerateConfig) (DigestSet, error) {
+func enumerateOCI(ctx context.Context, cfg EnumerateConfig) (map[string]struct{}, error) {
 	if cfg.Fs == nil {
 		return nil, errors.New("enumerate oci: nil FS")
 	}
 
-	out := NewDigestSet()
+	out := map[string]struct{}{}
 
 	dumps, err := walkDumpDirs(cfg.Fs, ".")
 	if err != nil {
@@ -176,7 +176,7 @@ func enumerateOCI(ctx context.Context, cfg EnumerateConfig) (DigestSet, error) {
 			continue
 		}
 		for _, desc := range ocidir.AllDescriptors(mDesc, man) {
-			out.Add(string(desc.Digest))
+			out[string(desc.Digest)] = struct{}{}
 		}
 	}
 
@@ -186,19 +186,19 @@ func enumerateOCI(ctx context.Context, cfg EnumerateConfig) (DigestSet, error) {
 	return out, nil
 }
 
-// sharedDir is a [ocidir.DirV1] over a single base-rooted [Fs] with
-// FS-relative dumpDir + shareDir paths. Used by the orchestrator
+// sharedDir is a [ocidir.DirV1] over a single base-rooted [vroot.Fs]
+// with FS-relative dumpDir + shareDir paths. Used by the orchestrator
 // because SFTP-backed FSes can't be cheaply sub-rooted; the public
 // [ocidir.SharedFsDir] (which composes a [ocidir.DirV1] + a separate
 // [vroot.Fs]) is the right shape when sub-FSes are easy.
 type sharedDir struct {
-	fs       Fs
+	fs       vroot.Fs
 	dumpDir  string
 	shareDir string
 }
 
 func (d sharedDir) Index() (v1.Index, error) {
-	data, err := readAllVia(d.fs, path.Join(d.dumpDir, "index.json"))
+	data, err := vroot.ReadFile(d.fs, path.Join(d.dumpDir, "index.json"))
 	if err != nil {
 		return v1.Index{}, fmt.Errorf("ocidir: read index.json: %w", err)
 	}
@@ -213,7 +213,7 @@ func (d sharedDir) Index() (v1.Index, error) {
 }
 
 func (d sharedDir) ImageLayout() (v1.ImageLayout, error) {
-	data, err := readAllVia(d.fs, path.Join(d.dumpDir, v1.ImageLayoutFile))
+	data, err := vroot.ReadFile(d.fs, path.Join(d.dumpDir, v1.ImageLayoutFile))
 	if err != nil {
 		return v1.ImageLayout{}, fmt.Errorf("ocidir: read %s: %w", v1.ImageLayoutFile, err)
 	}
@@ -232,10 +232,10 @@ func (d sharedDir) Blob(dg digest.Digest) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, err := readAllVia(d.fs, path.Join(d.shareDir, algo, hex))
+	data, err := vroot.ReadFile(d.fs, path.Join(d.shareDir, algo, hex))
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, os.ErrNotExist) {
-			return nil, os.ErrNotExist
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, fs.ErrNotExist
 		}
 		return nil, err
 	}
@@ -245,10 +245,10 @@ func (d sharedDir) Blob(dg digest.Digest) ([]byte, error) {
 // walkDumpDirs walks the FS root listing immediate children, then
 // for each non-reserved child recurses looking for `_tags`/`_digests`
 // marker dirs. The returned paths are FS-relative leaf dump dirs.
-func walkDumpDirs(fs Fs, root string) ([]string, error) {
-	hosts, err := readDirVia(fs, root)
+func walkDumpDirs(fsys vroot.Fs, root string) ([]string, error) {
+	hosts, err := vroot.ReadDir(fsys, root)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) || errors.Is(err, fs2NotExist) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, err
@@ -268,7 +268,7 @@ func walkDumpDirs(fs Fs, root string) ([]string, error) {
 		} else {
 			prefix = path.Join(root, name)
 		}
-		if err := walkRepoTree(fs, prefix, &out); err != nil {
+		if err := walkRepoTree(fsys, prefix, &out); err != nil {
 			return nil, err
 		}
 	}
@@ -278,8 +278,8 @@ func walkDumpDirs(fs Fs, root string) ([]string, error) {
 // walkRepoTree recursively descends dir, treating any direct child
 // named `_tags` or `_digests` as a marker dir whose own children are
 // dump leaves.
-func walkRepoTree(fs Fs, dir string, out *[]string) error {
-	entries, err := readDirVia(fs, dir)
+func walkRepoTree(fsys vroot.Fs, dir string, out *[]string) error {
+	entries, err := vroot.ReadDir(fsys, dir)
 	if err != nil {
 		return err
 	}
@@ -291,7 +291,7 @@ func walkRepoTree(fs Fs, dir string, out *[]string) error {
 		switch name {
 		case "_tags", "_digests":
 			markerDir := path.Join(dir, name)
-			leaves, err := readDirVia(fs, markerDir)
+			leaves, err := vroot.ReadDir(fsys, markerDir)
 			if err != nil {
 				return err
 			}
@@ -301,7 +301,7 @@ func walkRepoTree(fs Fs, dir string, out *[]string) error {
 				}
 			}
 		default:
-			if err := walkRepoTree(fs, path.Join(dir, name), out); err != nil {
+			if err := walkRepoTree(fsys, path.Join(dir, name), out); err != nil {
 				return err
 			}
 		}
@@ -309,22 +309,13 @@ func walkRepoTree(fs Fs, dir string, out *[]string) error {
 	return nil
 }
 
-// fs2NotExist is a sentinel — io/fs.ErrNotExist. Aliased here so the
-// errors.Is call above is readable inline.
-var fs2NotExist = fs.ErrNotExist
-
 // unionShareInventory adds every blob found under shareDir/sha256/ to
 // dst. Missing share/ is treated as empty inventory.
-func unionShareInventory(dst DigestSet, f Fs, shareDir string) error {
+func unionShareInventory(dst map[string]struct{}, f vroot.Fs, shareDir string) error {
 	algoDir := path.Join(shareDir, "sha256")
-	if _, ok, err := statSize(f, algoDir); err != nil {
-		return err
-	} else if !ok {
-		return nil
-	}
-	entries, err := readDirVia(f, algoDir)
+	entries, err := vroot.ReadDir(f, algoDir)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) || errors.Is(err, fs2NotExist) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
 		return err
@@ -337,7 +328,7 @@ func unionShareInventory(dst DigestSet, f Fs, shareDir string) error {
 		if len(name) != digest.SHA256.Size()*2 {
 			continue
 		}
-		dst.Add(digest.SHA256.String() + ":" + name)
+		dst[digest.SHA256.String()+":"+name] = struct{}{}
 	}
 	return nil
 }

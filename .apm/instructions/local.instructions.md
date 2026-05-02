@@ -1,3 +1,8 @@
+---
+description: "Basic instructions for my env"
+applyTo: "*"
+---
+
 # Local-only test convention
 
 Some Go tests in this repo cannot run on CI — they need locally-dumped
@@ -15,7 +20,7 @@ function name (or the leaf name of a `t.Run` invocation) with `_Local`.
 // runs in CI
 func TestParseManifest_OCI(t *testing.T) { ... }
 
-// CI-skipped: needs pkg/ocidir/testdata/ populated by `go generate`
+// CI-skipped: needs internal/testdata/ocidir/ populated by `go generate`
 func TestReadManifest_Local(t *testing.T) { ... }
 ```
 

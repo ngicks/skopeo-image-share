@@ -36,7 +36,7 @@ func TestPull_HappyPath(t *testing.T) {
 
 	res, err := local.Pull(context.Background(), PullArgs{
 		Images:            []string{"ghcr.io/a/b:v1"},
-		AssumeLocalHasSet: NewDigestSet(),
+		AssumeLocalHasSet: map[string]struct{}{},
 	}, remote)
 	if err != nil {
 		t.Fatal(err)
@@ -83,7 +83,7 @@ func TestPull_DryRun_NoMutationsAnywhere(t *testing.T) {
 	res, err := local.Pull(context.Background(), PullArgs{
 		Images:            []string{"ghcr.io/a/b:v1"},
 		DryRun:            true,
-		AssumeLocalHasSet: NewDigestSet(),
+		AssumeLocalHasSet: map[string]struct{}{},
 	}, remote)
 	if err != nil {
 		t.Fatal(err)
@@ -162,7 +162,7 @@ func TestPull_ResumeFromInterruptedPart(t *testing.T) {
 
 	res, err := local.Pull(context.Background(), PullArgs{
 		Images:            []string{"ghcr.io/a/b:v1"},
-		AssumeLocalHasSet: NewDigestSet(),
+		AssumeLocalHasSet: map[string]struct{}{},
 	}, remote)
 	if err != nil {
 		t.Fatal(err)

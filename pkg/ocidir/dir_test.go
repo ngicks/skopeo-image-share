@@ -33,16 +33,16 @@ func mustFs(t *testing.T, root string) vroot.Fs {
 	return v
 }
 
-// TestReadManifest_Local walks pkg/ocidir/testdata/, finds every dump
-// dir (any directory containing an `index.json`), and verifies it
+// TestReadManifest_Local walks internal/testdata/ocidir/, finds every
+// dump dir (any directory containing an `index.json`), and verifies it
 // round-trips through [SharedFsDir] + [ReadManifest]. The `_Local`
 // suffix marks it for skipping in CI; populate testdata locally with
-// the recipe in pkg/ocidir/prep_testdata.go.
+// the recipe in the repo-root prep_testdata.go.
 func TestReadManifest_Local(t *testing.T) {
 	t.Parallel()
-	const root = "testdata"
+	root := filepath.Join("..", "..", "internal", "testdata", "ocidir")
 	if _, err := os.Stat(root); errors.Is(err, fs.ErrNotExist) {
-		t.Skip("no pkg/ocidir/testdata/ dir")
+		t.Skip("no internal/testdata/ocidir/ dir")
 	}
 
 	dumps, err := findDumpDirs(root)
@@ -50,7 +50,7 @@ func TestReadManifest_Local(t *testing.T) {
 		t.Fatalf("findDumpDirs: %v", err)
 	}
 	if len(dumps) == 0 {
-		t.Skip("no OCI dumps under pkg/ocidir/testdata/; run `go generate ./pkg/ocidir/` to populate")
+		t.Skip("no OCI dumps under internal/testdata/ocidir/; run `go generate .` to populate")
 	}
 
 	for _, dumpDir := range dumps {

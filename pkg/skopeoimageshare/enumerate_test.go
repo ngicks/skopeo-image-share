@@ -5,9 +5,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
+	"github.com/ngicks/go-fsys-helper/vroot/osfs"
 	"github.com/ngicks/skopeo-image-share/pkg/cli/skopeo"
 	"github.com/ngicks/skopeo-image-share/pkg/ocidir"
 )
@@ -42,7 +44,7 @@ func TestEnumerate_ContainersStorage(t *testing.T) {
 	must(t, os.MkdirAll(filepath.Join(tmp, "share", "sha256"), 0o755))
 	must(t, os.WriteFile(filepath.Join(tmp, "share", "sha256", shareBlob), []byte("loose"), 0o644))
 
-	fs, err := NewLocalFs(tmp)
+	fs, err := osfs.NewUnrooted(tmp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,8 +73,8 @@ func TestEnumerate_ContainersStorage(t *testing.T) {
 		"sha256:" + shareBlob,
 	}
 	for _, w := range wants {
-		if !got.Has(w) {
-			t.Errorf("missing %s in result %v", w, got.Slice())
+		if _, ok := got[w]; !ok {
+			t.Errorf("missing %s in result %v", w, sortedKeys(got))
 		}
 	}
 }
@@ -80,7 +82,7 @@ func TestEnumerate_ContainersStorage(t *testing.T) {
 func TestEnumerate_DockerDaemon_SkipsBadInspect(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
-	fs, err := NewLocalFs(tmp)
+	fs, err := osfs.NewUnrooted(tmp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +98,7 @@ func TestEnumerate_DockerDaemon_SkipsBadInspect(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(got) != 0 {
-		t.Errorf("expected empty (all inspects failed), got %v", got.Slice())
+		t.Errorf("expected empty (all inspects failed), got %v", sortedKeys(got))
 	}
 }
 
@@ -122,7 +124,7 @@ func TestEnumerate_OCI_FilesystemWalk(t *testing.T) {
 	must(t, os.WriteFile(filepath.Join(shareSha, manifestHex), []byte(ociManifestFixture), 0o644))
 	must(t, os.WriteFile(filepath.Join(shareSha, looseHex), []byte("loose"), 0o644))
 
-	fs, err := NewLocalFs(tmp)
+	fs, err := osfs.NewUnrooted(tmp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,8 +146,8 @@ func TestEnumerate_OCI_FilesystemWalk(t *testing.T) {
 		"sha256:" + looseHex,
 	}
 	for _, w := range wants {
-		if !got.Has(w) {
-			t.Errorf("missing %s in result %v", w, got.Slice())
+		if _, ok := got[w]; !ok {
+			t.Errorf("missing %s in result %v", w, sortedKeys(got))
 		}
 	}
 }
@@ -160,7 +162,7 @@ func TestEnumerate_BadTransport(t *testing.T) {
 func TestEnumerate_OCI_MissingBaseDir_NoError(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
-	fs, err := NewLocalFs(tmp)
+	fs, err := osfs.NewUnrooted(tmp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +172,7 @@ func TestEnumerate_OCI_MissingBaseDir_NoError(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(got) != 0 {
-		t.Errorf("got %v, want empty", got.Slice())
+		t.Errorf("got %v, want empty", sortedKeys(got))
 	}
 }
 
@@ -179,4 +181,13 @@ func must(t *testing.T, err error) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+func sortedKeys(s map[string]struct{}) []string {
+	out := make([]string, 0, len(s))
+	for d := range s {
+		out = append(out, d)
+	}
+	sort.Strings(out)
+	return out
 }

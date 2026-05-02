@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/ngicks/go-fsys-helper/vroot"
+	"github.com/ngicks/go-fsys-helper/vroot/osfs"
 	"github.com/ngicks/skopeo-image-share/pkg/cli"
 	"github.com/ngicks/skopeo-image-share/pkg/cli/docker"
 	"github.com/ngicks/skopeo-image-share/pkg/cli/skopeo"
@@ -14,7 +16,7 @@ import (
 
 // Local is the local-side push/pull endpoint. It owns the resolved
 // base data dir, the local skopeo / podman / docker wrappers, and an
-// [Fs] rooted at BaseDir. Build via [NewLocal].
+// [vroot.Fs] rooted at BaseDir. Build via [NewLocal].
 //
 // [Local.Push] and [Local.Pull] drive a transfer against any [Remote]
 // (typically the SSH-backed implementation from [NewRemote]).
@@ -25,7 +27,7 @@ type Local struct {
 
 	skopeoCli SkopeoLike
 	lister    Lister
-	fs        Fs
+	fs        vroot.Fs
 
 	validateOnce sync.Once
 	validateErr  error
@@ -44,7 +46,7 @@ type LocalConfig struct {
 }
 
 // NewLocal resolves BaseDir, ensures the on-disk layout, and builds
-// the local skopeo wrapper plus an [Fs] rooted at BaseDir. A
+// the local skopeo wrapper plus an [vroot.Fs] rooted at BaseDir. A
 // transport-appropriate lister (podman / docker) is wired up
 // automatically.
 func NewLocal(ctx context.Context, cfg LocalConfig) (*Local, error) {
@@ -62,9 +64,9 @@ func NewLocal(ctx context.Context, cfg LocalConfig) (*Local, error) {
 	if err := NewStore(base).EnsureLayout(ctx); err != nil {
 		return nil, fmt.Errorf("local: ensure layout: %w", err)
 	}
-	fs, err := NewLocalFs(base)
+	fs, err := osfs.NewUnrooted(base)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("local: %w", err)
 	}
 	l := &Local{
 		baseDir:   base,
@@ -95,8 +97,8 @@ func (l *Local) OCIPath() string { return l.ociPath }
 // Skopeo returns the local skopeo wrapper.
 func (l *Local) Skopeo() SkopeoLike { return l.skopeoCli }
 
-// FS returns the local [Fs] rooted at BaseDir.
-func (l *Local) FS() Fs { return l.fs }
+// FS returns the local [vroot.Fs] rooted at BaseDir.
+func (l *Local) FS() vroot.Fs { return l.fs }
 
 // Lister returns the local docker / podman wrapper, or nil for
 // [skopeo.TransportOci].
@@ -147,6 +149,6 @@ func (l *Local) Dump(ctx context.Context, ref imageref.ImageRef) (string, error)
 
 // List returns the digest set of every blob reachable from this
 // local's images, plus the share/ inventory.
-func (l *Local) List(ctx context.Context) (DigestSet, error) {
+func (l *Local) List(ctx context.Context) (map[string]struct{}, error) {
 	return listAt(ctx, l.transport, l.skopeoCli, l.fs, l.baseDir, l.lister)
 }

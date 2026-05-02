@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/ngicks/go-fsys-helper/stream"
+	"github.com/ngicks/go-fsys-helper/vroot"
+	"github.com/ngicks/go-fsys-helper/vroot/osfs"
 )
 
 const blobBody = "hello world\n"
@@ -23,16 +25,16 @@ func writeFile(t *testing.T, p string, data []byte) {
 	}
 }
 
-func makeFSPair(t *testing.T) (srcFS, dstFS Fs, srcRoot, dstRoot string) {
+func makeFSPair(t *testing.T) (srcFS, dstFS vroot.Fs, srcRoot, dstRoot string) {
 	t.Helper()
 	srcRoot = t.TempDir()
 	dstRoot = t.TempDir()
 	var err error
-	srcFS, err = NewLocalFs(srcRoot)
+	srcFS, err = osfs.NewUnrooted(srcRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	dstFS, err = NewLocalFs(dstRoot)
+	dstFS, err = osfs.NewUnrooted(dstRoot)
 	if err != nil {
 		t.Fatal(err)
 	}

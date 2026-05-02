@@ -4,14 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"path/filepath"
 	"sort"
 	"time"
 
 	"github.com/ngicks/go-common/contextkey"
-	"github.com/ngicks/skopeo-image-share/pkg/cli"
+	"github.com/ngicks/go-fsys-helper/vroot"
 	"github.com/ngicks/skopeo-image-share/pkg/cli/skopeo"
 	"github.com/ngicks/skopeo-image-share/pkg/imageref"
 	"github.com/ngicks/skopeo-image-share/pkg/ocidir"
@@ -40,9 +39,9 @@ type PushArgs struct {
 	AssumeRemoteHas []string
 
 	// AssumeRemoteHasSet is the higher-level form of AssumeRemoteHas
-	// (already parsed to a [DigestSet]). When non-nil it takes
+	// (already parsed to a digest set). When non-nil it takes
 	// precedence over [PushArgs.AssumeRemoteHas].
-	AssumeRemoteHasSet DigestSet
+	AssumeRemoteHasSet map[string]struct{}
 
 	// KeepGoing makes per-image errors non-fatal: the run accumulates
 	// failures and exits non-zero with a final failure count, rather
@@ -164,14 +163,14 @@ func validatePush(args PushArgs, local *Local, peer Remote) error {
 
 // resolveRemoteHas builds the peer-has set, honoring the assume-remote-has
 // shortcut.
-func resolveRemoteHas(ctx context.Context, args PushArgs, peer Remote) (DigestSet, error) {
+func resolveRemoteHas(ctx context.Context, args PushArgs, peer Remote) (map[string]struct{}, error) {
 	if args.AssumeRemoteHasSet != nil {
 		return args.AssumeRemoteHasSet, nil
 	}
 	if len(args.AssumeRemoteHas) > 0 {
-		ds := NewDigestSet()
+		ds := make(map[string]struct{}, len(args.AssumeRemoteHas))
 		for _, d := range args.AssumeRemoteHas {
-			ds.Add(d)
+			ds[d] = struct{}{}
 		}
 		return ds, nil
 	}
@@ -183,7 +182,7 @@ func pushOne(
 	args PushArgs,
 	local *Local,
 	peer Remote,
-	remoteHas DigestSet,
+	remoteHas map[string]struct{},
 	ref imageref.ImageRef,
 	jobs int,
 ) PushImageReport {
@@ -222,8 +221,11 @@ func pushOne(
 	descs := ocidir.AllDescriptors(mDesc, man)
 	all := descriptorDigestSet(descs)
 	sizes := descriptorSizes(descs)
-	pinned := NewDigestSet(string(mDesc.Digest), string(man.Config.Digest))
-	toSend := Diff(all, remoteHas, pinned)
+	pinned := map[string]struct{}{
+		string(mDesc.Digest):      {},
+		string(man.Config.Digest): {},
+	}
+	toSend := mapKeyDiff(all, remoteHas, pinned)
 
 	for d := range all {
 		if _, send := toSend[d]; !send {
@@ -251,29 +253,20 @@ func pushOne(
 			slog.Int64("bytes", bytesSent),
 		)
 	} else {
-		runJobs := make([]Job, 0, len(digestsSorted))
+		fns := make([]func(context.Context) error, 0, len(digestsSorted))
 		for _, d := range digestsSorted {
-			expectedSize := sizes[d]
-			srcPath, err := RelBlobPath(d)
+			relPath, err := RelBlobPath(d)
 			if err != nil {
 				rep.Err = err
 				return rep
 			}
-			dstPath := srcPath
-			runJobs = append(runJobs, Job{
-				ID: d,
-				Run: func(ctx context.Context) error {
-					return TransferBlob(ctx, local.fs, srcPath, peer.FS(), dstPath, expectedSize)
-				},
+			expectedSize := sizes[d]
+			fns = append(fns, func(ctx context.Context) error {
+				return TransferBlob(ctx, local.fs, relPath, peer.FS(), relPath, expectedSize)
 			})
 		}
-		res := RunPool(ctx, runJobs, jobs, RetryConfig{
-			Retries:     args.Retries,
-			MaxDelay:    args.RetryMaxDelay,
-			IsRetryable: defaultIsRetryable,
-		})
-		if res.HasErrors() {
-			rep.Err = res.JoinedError()
+		if err := runTransfers(ctx, jobs, args.Retries, args.RetryMaxDelay, digestsSorted, fns); err != nil {
+			rep.Err = err
 			return rep
 		}
 		for _, d := range digestsSorted {
@@ -354,12 +347,11 @@ func dumpAndDeriveClosurePush(
 	return mDesc, man, nil
 }
 
-// descriptorDigestSet returns the [DigestSet] of every descriptor's
-// digest.
-func descriptorDigestSet(descs []v1.Descriptor) DigestSet {
-	out := NewDigestSet()
+// descriptorDigestSet returns the digest set of every descriptor.
+func descriptorDigestSet(descs []v1.Descriptor) map[string]struct{} {
+	out := make(map[string]struct{}, len(descs))
 	for _, d := range descs {
-		out.Add(string(d.Digest))
+		out[string(d.Digest)] = struct{}{}
 	}
 	return out
 }
@@ -378,33 +370,21 @@ func descriptorSizes(descs []v1.Descriptor) map[string]int64 {
 }
 
 // transferTagDir ships oci-layout + index.json from srcDir to dstDir
-// using [SafeWrite] (atomic tmp+rename).
-func transferTagDir(ctx context.Context, srcFS Fs, srcDir string, dstFS Fs, dstDir string) error {
+// using atomic tmp+rename.
+func transferTagDir(ctx context.Context, srcFS vroot.Fs, srcDir string, dstFS vroot.Fs, dstDir string) error {
 	return CopyTagDirSmallFiles(ctx, srcFS, srcDir, dstFS, dstDir,
 		[]string{"oci-layout", "index.json"})
 }
 
 // sortedDigests returns ds in lexical order so transfer scheduling is
 // deterministic (helps with test assertions and log readability).
-func sortedDigests(ds DigestSet) []string {
-	out := ds.Slice()
+func sortedDigests(ds map[string]struct{}) []string {
+	out := make([]string, 0, len(ds))
+	for d := range ds {
+		out = append(out, d)
+	}
 	sort.Strings(out)
 	return out
-}
-
-// defaultIsRetryable: every error is retryable except [io.EOF] (which
-// shouldn't be surfaced from TransferBlob anyway) and CommandError —
-// non-zero exits from skopeo are program-logic failures, not network
-// glitches, so don't burn retry budget on them.
-func defaultIsRetryable(err error) bool {
-	if errors.Is(err, io.EOF) {
-		return false
-	}
-	var ce *cli.CommandError
-	if errors.As(err, &ce) {
-		return false
-	}
-	return true
 }
 
 // SummaryLine returns the human-readable per-image summary string.

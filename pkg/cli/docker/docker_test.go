@@ -26,7 +26,7 @@ func (r *stubRunner) Run(ctx context.Context, argv []string) ([]byte, error) {
 func readFixture(t *testing.T, name string) []byte {
 	t.Helper()
 	wd, _ := os.Getwd()
-	p := filepath.Join(wd, "..", "..", "..", "testdata", name)
+	p := filepath.Join(wd, "..", "..", "..", "internal", "testdata", "dockeroutput", name)
 	data, err := os.ReadFile(p)
 	if err != nil {
 		t.Fatalf("read fixture %s: %v", name, err)
@@ -117,9 +117,9 @@ func TestParseDockerImageLs_Dedup(t *testing.T) {
 }
 
 // TestParseDockerImageInspect_Fixture verifies that the
-// testdata/docker-image-inspect.json sample parses cleanly into
-// RepoTags via the alternative parser (the live enumeration uses
-// `image ls --format json`).
+// internal/testdata/dockeroutput/docker-image-inspect.json sample
+// parses cleanly into RepoTags via the alternative parser (the live
+// enumeration uses `image ls --format json`).
 func TestParseDockerImageInspect_Fixture(t *testing.T) {
 	t.Parallel()
 	imgs, err := ParseDockerImageInspect(readFixture(t, "docker-image-inspect.json"))

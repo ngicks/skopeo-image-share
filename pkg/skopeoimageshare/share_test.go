@@ -5,8 +5,11 @@ import (
 	"testing"
 )
 
-func sorted(s DigestSet) []string {
-	out := s.Slice()
+func sorted(s map[string]struct{}) []string {
+	out := make([]string, 0, len(s))
+	for d := range s {
+		out = append(out, d)
+	}
 	sort.Strings(out)
 	return out
 }
@@ -23,7 +26,15 @@ func eq(a, b []string) bool {
 	return true
 }
 
-func TestDiff(t *testing.T) {
+func digestSet(ds ...string) map[string]struct{} {
+	s := make(map[string]struct{}, len(ds))
+	for _, d := range ds {
+		s[d] = struct{}{}
+	}
+	return s
+}
+
+func Test_mapKeyDiff(t *testing.T) {
 	t.Parallel()
 
 	const (
@@ -36,66 +47,55 @@ func TestDiff(t *testing.T) {
 
 	cases := []struct {
 		name   string
-		need   DigestSet
-		have   DigestSet
-		pinned DigestSet
+		need   map[string]struct{}
+		have   map[string]struct{}
+		pinned map[string]struct{}
 		want   []string
 	}{
 		{
 			name:   "empty have, all sent (incl pinned)",
-			need:   NewDigestSet(manifest, config, l1, l2),
-			have:   NewDigestSet(),
-			pinned: NewDigestSet(manifest, config),
+			need:   digestSet(manifest, config, l1, l2),
+			have:   digestSet(),
+			pinned: digestSet(manifest, config),
 			want:   []string{config, l1, l2, manifest},
 		},
 		{
 			name:   "full overlap, only pinned sent",
-			need:   NewDigestSet(manifest, config, l1, l2),
-			have:   NewDigestSet(manifest, config, l1, l2),
-			pinned: NewDigestSet(manifest, config),
+			need:   digestSet(manifest, config, l1, l2),
+			have:   digestSet(manifest, config, l1, l2),
+			pinned: digestSet(manifest, config),
 			want:   []string{config, manifest},
 		},
 		{
 			name:   "partial overlap",
-			need:   NewDigestSet(manifest, config, l1, l2, l3),
-			have:   NewDigestSet(l1, l2),
-			pinned: NewDigestSet(manifest, config),
+			need:   digestSet(manifest, config, l1, l2, l3),
+			have:   digestSet(l1, l2),
+			pinned: digestSet(manifest, config),
 			want:   []string{config, l3, manifest},
 		},
 		{
 			name:   "pinned digest in have is still emitted",
-			need:   NewDigestSet(l1),
-			have:   NewDigestSet(manifest, config, l1),
-			pinned: NewDigestSet(manifest, config),
+			need:   digestSet(l1),
+			have:   digestSet(manifest, config, l1),
+			pinned: digestSet(manifest, config),
 			want:   []string{config, manifest},
 		},
 		{
 			name:   "no pinned",
-			need:   NewDigestSet(l1, l2),
-			have:   NewDigestSet(l1),
-			pinned: NewDigestSet(),
+			need:   digestSet(l1, l2),
+			have:   digestSet(l1),
+			pinned: digestSet(),
 			want:   []string{l2},
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := sorted(Diff(tc.need, tc.have, tc.pinned))
+			got := sorted(mapKeyDiff(tc.need, tc.have, tc.pinned))
 			sort.Strings(tc.want)
 			if !eq(got, tc.want) {
 				t.Errorf("Diff: got %v, want %v", got, tc.want)
 			}
 		})
-	}
-}
-
-func TestUnion(t *testing.T) {
-	t.Parallel()
-	a := NewDigestSet("a", "b")
-	b := NewDigestSet("b", "c")
-	got := sorted(a.Union(b))
-	want := []string{"a", "b", "c"}
-	if !eq(got, want) {
-		t.Errorf("Union: got %v, want %v", got, want)
 	}
 }

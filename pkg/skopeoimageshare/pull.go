@@ -32,9 +32,9 @@ type PullArgs struct {
 	AssumeLocalHas []string
 
 	// AssumeLocalHasSet is the higher-level form of AssumeLocalHas
-	// (already parsed to a [DigestSet]). When non-nil it takes
+	// (already parsed to a digest set). When non-nil it takes
 	// precedence over [PullArgs.AssumeLocalHas].
-	AssumeLocalHasSet DigestSet
+	AssumeLocalHasSet map[string]struct{}
 
 	KeepGoing bool
 
@@ -132,14 +132,14 @@ func validatePull(args PullArgs, local *Local, peer Remote) error {
 	return nil
 }
 
-func resolveLocalHas(ctx context.Context, args PullArgs, local *Local) (DigestSet, error) {
+func resolveLocalHas(ctx context.Context, args PullArgs, local *Local) (map[string]struct{}, error) {
 	if args.AssumeLocalHasSet != nil {
 		return args.AssumeLocalHasSet, nil
 	}
 	if len(args.AssumeLocalHas) > 0 {
-		ds := NewDigestSet()
+		ds := make(map[string]struct{}, len(args.AssumeLocalHas))
 		for _, d := range args.AssumeLocalHas {
-			ds.Add(d)
+			ds[d] = struct{}{}
 		}
 		return ds, nil
 	}
@@ -151,7 +151,7 @@ func pullOne(
 	args PullArgs,
 	local *Local,
 	peer Remote,
-	localHas DigestSet,
+	localHas map[string]struct{},
 	ref imageref.ImageRef,
 	jobs int,
 ) PullImageReport {
@@ -190,8 +190,11 @@ func pullOne(
 	descs := ocidir.AllDescriptors(mDesc, man)
 	all := descriptorDigestSet(descs)
 	sizes := descriptorSizes(descs)
-	pinned := NewDigestSet(string(mDesc.Digest), string(man.Config.Digest))
-	toFetch := Diff(all, localHas, pinned)
+	pinned := map[string]struct{}{
+		string(mDesc.Digest):      {},
+		string(man.Config.Digest): {},
+	}
+	toFetch := mapKeyDiff(all, localHas, pinned)
 
 	for d := range all {
 		if _, fetch := toFetch[d]; !fetch {
@@ -218,28 +221,20 @@ func pullOne(
 			slog.Int64("bytes", bytesFetched),
 		)
 	} else {
-		runJobs := make([]Job, 0, len(digestsSorted))
+		fns := make([]func(context.Context) error, 0, len(digestsSorted))
 		for _, d := range digestsSorted {
-			expectedSize := sizes[d]
 			relPath, err := RelBlobPath(d)
 			if err != nil {
 				rep.Err = err
 				return rep
 			}
-			runJobs = append(runJobs, Job{
-				ID: d,
-				Run: func(ctx context.Context) error {
-					return TransferBlob(ctx, peer.FS(), relPath, local.fs, relPath, expectedSize)
-				},
+			expectedSize := sizes[d]
+			fns = append(fns, func(ctx context.Context) error {
+				return TransferBlob(ctx, peer.FS(), relPath, local.fs, relPath, expectedSize)
 			})
 		}
-		res := RunPool(ctx, runJobs, jobs, RetryConfig{
-			Retries:     args.Retries,
-			MaxDelay:    args.RetryMaxDelay,
-			IsRetryable: defaultIsRetryable,
-		})
-		if res.HasErrors() {
-			rep.Err = res.JoinedError()
+		if err := runTransfers(ctx, jobs, args.Retries, args.RetryMaxDelay, digestsSorted, fns); err != nil {
+			rep.Err = err
 			return rep
 		}
 		for _, d := range digestsSorted {
@@ -328,4 +323,3 @@ func (r PullImageReport) SummaryLine() string {
 	return fmt.Sprintf("%s%s pulled (new: %d, reused: %d, bytes: %d)",
 		prefix, r.Ref.String(), r.Fetched, r.Reused, r.BytesFetched)
 }
-

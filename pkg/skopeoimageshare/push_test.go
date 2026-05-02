@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/ngicks/go-fsys-helper/vroot"
+	"github.com/ngicks/go-fsys-helper/vroot/osfs"
 	"github.com/ngicks/skopeo-image-share/pkg/cli/skopeo"
 	"github.com/ngicks/skopeo-image-share/pkg/imageref"
 )
@@ -68,8 +70,8 @@ type fakeRemote struct {
 	readOnly  bool
 	skopeoCli SkopeoLike
 	lister    Lister
-	fs        Fs
-	assumeHas DigestSet
+	fs        vroot.Fs
+	assumeHas map[string]struct{}
 }
 
 func (f *fakeRemote) Close() error                       { return nil }
@@ -77,7 +79,7 @@ func (f *fakeRemote) BaseDir() string                    { return f.baseDir }
 func (f *fakeRemote) Transport() skopeo.Transport        { return f.transport }
 func (f *fakeRemote) OCIPath() string                    { return f.ociPath }
 func (f *fakeRemote) Skopeo() SkopeoLike                 { return f.skopeoCli }
-func (f *fakeRemote) FS() Fs                             { return f.fs }
+func (f *fakeRemote) FS() vroot.Fs                       { return f.fs }
 func (f *fakeRemote) Lister() Lister                     { return f.lister }
 func (f *fakeRemote) ReadOnly() bool                     { return f.readOnly }
 func (f *fakeRemote) Validate(ctx context.Context) error { return nil }
@@ -88,7 +90,7 @@ func (f *fakeRemote) Dump(ctx context.Context, ref imageref.ImageRef) (string, e
 	return dumpRemote(ctx, f.transport, f.baseDir, f.skopeoCli, f.fs, ref)
 }
 
-func (f *fakeRemote) List(ctx context.Context) (DigestSet, error) {
+func (f *fakeRemote) List(ctx context.Context) (map[string]struct{}, error) {
 	if f.assumeHas != nil {
 		return f.assumeHas, nil
 	}
@@ -97,16 +99,16 @@ func (f *fakeRemote) List(ctx context.Context) (DigestSet, error) {
 
 // newSides constructs local + remote FSes (both osfs.NewUnrooted
 // rooted at separate temp dirs) for orchestrator tests.
-func newSides(t *testing.T) (localFS, remoteFS Fs, localBase, remoteBase string) {
+func newSides(t *testing.T) (localFS, remoteFS vroot.Fs, localBase, remoteBase string) {
 	t.Helper()
 	localBase = t.TempDir()
 	remoteBase = t.TempDir()
 	var err error
-	localFS, err = NewLocalFs(localBase)
+	localFS, err = osfs.NewUnrooted(localBase)
 	if err != nil {
 		t.Fatal(err)
 	}
-	remoteFS, err = NewLocalFs(remoteBase)
+	remoteFS, err = osfs.NewUnrooted(remoteBase)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +133,7 @@ func seedDump(t *testing.T, tagDir, shareDir string) (manifestDigest string) {
 	return manifestDigest
 }
 
-func newLocal(localFS Fs, base string, sk SkopeoLike) *Local {
+func newLocal(localFS vroot.Fs, base string, sk SkopeoLike) *Local {
 	return &Local{
 		baseDir:   base,
 		transport: skopeo.TransportContainersStorage,
@@ -161,7 +163,7 @@ func TestPush_HappyPath_Sends_Then_Loads(t *testing.T) {
 		transport: skopeo.TransportContainersStorage,
 		skopeoCli: remoteSk,
 		fs:        remoteFS,
-		assumeHas: NewDigestSet(),
+		assumeHas: map[string]struct{}{},
 	}
 
 	res, err := local.Push(context.Background(), PushArgs{
@@ -202,10 +204,10 @@ func TestPush_ReusesRemoteHas(t *testing.T) {
 	shareDir := filepath.Join(localBase, "share")
 	seedDump(t, tagDir, shareDir)
 
-	remoteHas := NewDigestSet(
-		"sha256:"+strings.Repeat("a", 64),
-		"sha256:"+strings.Repeat("b", 64),
-	)
+	remoteHas := map[string]struct{}{
+		"sha256:" + strings.Repeat("a", 64): {},
+		"sha256:" + strings.Repeat("b", 64): {},
+	}
 
 	local := newLocal(localFS, localBase, &recordingSkopeo{})
 	remote := &fakeRemote{
@@ -252,7 +254,7 @@ func TestPush_DryRun_NoMutationsAnywhere(t *testing.T) {
 		transport: skopeo.TransportContainersStorage,
 		skopeoCli: remoteSk,
 		fs:        remoteFS,
-		assumeHas: NewDigestSet(),
+		assumeHas: map[string]struct{}{},
 	}
 
 	res, err := local.Push(context.Background(), PushArgs{
@@ -313,7 +315,7 @@ func TestPush_KeepGoing_AccumulatesErrors(t *testing.T) {
 		transport: skopeo.TransportContainersStorage,
 		skopeoCli: &recordingSkopeo{},
 		fs:        remoteFS,
-		assumeHas: NewDigestSet(),
+		assumeHas: map[string]struct{}{},
 	}
 
 	res, err := local.Push(context.Background(), PushArgs{
@@ -378,7 +380,7 @@ func TestPush_RejectsReadOnlyRemote(t *testing.T) {
 		skopeoCli: &recordingSkopeo{},
 		fs:        remoteFS,
 		readOnly:  true,
-		assumeHas: NewDigestSet(),
+		assumeHas: map[string]struct{}{},
 	}
 
 	_, err := local.Push(context.Background(), PushArgs{

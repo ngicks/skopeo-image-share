@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ngicks/go-fsys-helper/vroot"
 	"github.com/ngicks/skopeo-image-share/pkg/cli"
 	"github.com/ngicks/skopeo-image-share/pkg/cli/docker"
 	"github.com/ngicks/skopeo-image-share/pkg/cli/skopeo"
@@ -47,7 +48,7 @@ type Remote interface {
 	// Skopeo is the skopeo wrapper bound to this peer.
 	Skopeo() SkopeoLike
 	// FS is rooted at BaseDir; orchestrator-facing paths are FS-relative.
-	FS() Fs
+	FS() vroot.Fs
 	// Lister is the docker / podman wrapper for live image
 	// enumeration. Returns nil for [skopeo.TransportOci].
 	Lister() Lister
@@ -68,7 +69,7 @@ type Remote interface {
 	Dump(ctx context.Context, ref imageref.ImageRef) (string, error)
 	// List returns the digest set of every blob the peer has,
 	// including the share/ inventory.
-	List(ctx context.Context) (DigestSet, error)
+	List(ctx context.Context) (map[string]struct{}, error)
 }
 
 // RemoteConfig configures [NewRemote].
@@ -106,7 +107,7 @@ type sshRemote struct {
 
 	skopeoCli SkopeoLike
 	lister    Lister
-	fs        Fs
+	fs        vroot.Fs
 
 	validateOnce sync.Once
 	validateErr  error
@@ -293,7 +294,7 @@ func (r *sshRemote) OCIPath() string { return r.ociPath }
 func (r *sshRemote) Skopeo() SkopeoLike { return r.skopeoCli }
 
 // FS implements [Remote].
-func (r *sshRemote) FS() Fs { return r.fs }
+func (r *sshRemote) FS() vroot.Fs { return r.fs }
 
 // Lister implements [Remote].
 func (r *sshRemote) Lister() Lister { return r.lister }
@@ -322,7 +323,7 @@ func (r *sshRemote) Dump(ctx context.Context, ref imageref.ImageRef) (string, er
 }
 
 // List implements [Remote].
-func (r *sshRemote) List(ctx context.Context) (DigestSet, error) {
+func (r *sshRemote) List(ctx context.Context) (map[string]struct{}, error) {
 	return listAt(ctx, r.transport, r.skopeoCli, r.fs, r.baseDir, r.lister)
 }
 
@@ -330,7 +331,7 @@ func (r *sshRemote) List(ctx context.Context) (DigestSet, error) {
 // [Local.Dump] but slash-normalizes the absolute paths handed to the
 // remote skopeo CLI (peer's filesystem is POSIX even when the host
 // running this binary is not).
-func dumpRemote(ctx context.Context, transport skopeo.Transport, baseDir string, sk SkopeoLike, fs Fs, ref imageref.ImageRef) (string, error) {
+func dumpRemote(ctx context.Context, transport skopeo.Transport, baseDir string, sk SkopeoLike, fs vroot.Fs, ref imageref.ImageRef) (string, error) {
 	store := NewStore(baseDir)
 	tagDirNative, err := store.DumpDir(ref)
 	if err != nil {
@@ -356,7 +357,7 @@ func dumpRemote(ctx context.Context, transport skopeo.Transport, baseDir string,
 }
 
 // listAt dispatches to [Enumerate] using the right lister for transport.
-func listAt(ctx context.Context, transport skopeo.Transport, sk SkopeoLike, fs Fs, baseDir string, lister Lister) (DigestSet, error) {
+func listAt(ctx context.Context, transport skopeo.Transport, sk SkopeoLike, fs vroot.Fs, baseDir string, lister Lister) (map[string]struct{}, error) {
 	cfg := EnumerateConfig{
 		Transport: transport,
 		Skopeo:    sk,
