@@ -295,7 +295,7 @@ func dumpAndDeriveClosurePull(
 		return mDesc, man, nil
 	}
 
-	raw, err := peer.Skopeo().InspectRaw(ctx, src)
+	raw, err := peer.Skopeo().Inspect(ctx, src, true, "")
 	if err != nil {
 		return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("skopeo inspect --raw: %w", err)
 	}

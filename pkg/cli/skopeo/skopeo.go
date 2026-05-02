@@ -90,35 +90,32 @@ func (s *Skopeo) Version(ctx context.Context) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// InspectRaw returns the raw manifest bytes for src via
-// `skopeo inspect --raw <src>`.
-func (s *Skopeo) InspectRaw(ctx context.Context, src TransportRef) ([]byte, error) {
+// Inspect runs `skopeo inspect` and returns its stdout. When raw is
+// true, `--raw` is added so the output is the raw manifest bytes;
+// when false, it is the JSON image-inspection report. A non-empty
+// sharedBlobDir adds `--shared-blob-dir <dir>` (only meaningful when
+// src.Transport == [TransportOci]). extraArgs are appended verbatim
+// before the source argument.
+func (s *Skopeo) Inspect(
+	ctx context.Context,
+	src TransportRef,
+	raw bool,
+	sharedBlobDir string,
+	extraArgs ...string,
+) ([]byte, error) {
 	srcStr, err := src.Format()
 	if err != nil {
 		return nil, err
 	}
-	return s.Runner.Run(ctx, []string{
-		"inspect", "--raw",
-		srcStr,
-	})
-}
-
-// InspectRawShared inspects an entry of a dumped oci: layout that
-// uses a shared blob pool and returns the raw manifest bytes. Wraps
-// `skopeo inspect --raw`. src.Transport must be [TransportOci].
-func (s *Skopeo) InspectRawShared(ctx context.Context, src TransportRef, sharedBlobDir string) ([]byte, error) {
-	if src.Transport != TransportOci {
-		return nil, fmt.Errorf("skopeo: InspectRawShared requires src.Transport == %q, got %q", TransportOci, src.Transport)
+	args := []string{"inspect"}
+	if raw {
+		args = append(args, "--raw")
 	}
-	srcStr, err := src.Format()
-	if err != nil {
-		return nil, err
+	if sharedBlobDir != "" {
+		args = append(args, "--shared-blob-dir", sharedBlobDir)
 	}
-	return s.Runner.Run(ctx, []string{
-		"inspect", "--raw",
-		"--shared-blob-dir", sharedBlobDir,
-		srcStr,
-	})
+	args = append(args, extraArgs...)
+	return s.Runner.Run(ctx, append(args, srcStr))
 }
 
 // Copy copies src into dst using the shared blob pool at

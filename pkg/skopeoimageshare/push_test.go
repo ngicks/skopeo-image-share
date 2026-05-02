@@ -36,7 +36,7 @@ func (s *recordingSkopeo) Version(ctx context.Context) (string, error) {
 	return s.versionRet, nil
 }
 
-func (s *recordingSkopeo) InspectRaw(ctx context.Context, src skopeo.TransportRef) ([]byte, error) {
+func (s *recordingSkopeo) Inspect(ctx context.Context, src skopeo.TransportRef, raw bool, sharedBlobDir string, extraArgs ...string) ([]byte, error) {
 	s.inspectCount.Add(1)
 	if data, ok := s.inspectRaw[string(src.Transport)+":"+src.Arg1]; ok {
 		return data, nil
@@ -274,7 +274,7 @@ func TestPush_DryRun_NoMutationsAnywhere(t *testing.T) {
 		t.Errorf("dry-run called CopyFromOCI %d times, want 0", remoteSk.copyFromCount.Load())
 	}
 	if got := localSk.inspectCount.Load(); got != 1 {
-		t.Errorf("dry-run InspectRaw count %d, want 1", got)
+		t.Errorf("dry-run Inspect count %d, want 1", got)
 	}
 	afterLocal := snapshotDir(t, localBase)
 	afterRemote := snapshotDir(t, remoteBase)
@@ -341,7 +341,7 @@ func TestPush_AssumeRemoteHasFromRawStrings_NoEnumeration(t *testing.T) {
 	shareDir := filepath.Join(localBase, "share")
 	seedDump(t, tagDir, shareDir)
 
-	peerSk := &recordingSkopeo{} // InspectRaw fails by default
+	peerSk := &recordingSkopeo{} // Inspect fails by default
 
 	local := newLocal(localFS, localBase, &recordingSkopeo{})
 	remote := &fakeRemote{
@@ -360,7 +360,7 @@ func TestPush_AssumeRemoteHasFromRawStrings_NoEnumeration(t *testing.T) {
 		t.Fatal(err)
 	}
 	if peerSk.inspectCount.Load() != 0 {
-		t.Errorf("peer skopeo InspectRaw called %d times, want 0 (--assume-remote-has should skip enumeration)",
+		t.Errorf("peer skopeo Inspect called %d times, want 0 (--assume-remote-has should skip enumeration)",
 			peerSk.inspectCount.Load())
 	}
 }

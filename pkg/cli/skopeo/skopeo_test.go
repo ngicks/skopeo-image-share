@@ -43,14 +43,14 @@ func TestSkopeo_Version_TrimsOutput(t *testing.T) {
 	}
 }
 
-func TestSkopeo_InspectRaw_Argv(t *testing.T) {
+func TestSkopeo_Inspect_Raw_Argv(t *testing.T) {
 	t.Parallel()
 	r := &stubRunner{out: []byte(`{"schemaVersion":2}`)}
 	s := newSkopeo(r)
-	_, err := s.InspectRaw(context.Background(), TransportRef{
+	_, err := s.Inspect(context.Background(), TransportRef{
 		Transport: TransportContainersStorage,
 		Arg1:      "myimg:latest",
-	})
+	}, true, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,13 +60,30 @@ func TestSkopeo_InspectRaw_Argv(t *testing.T) {
 	}
 }
 
-func TestSkopeo_InspectRawShared_Argv(t *testing.T) {
+func TestSkopeo_Inspect_NoRaw_Argv(t *testing.T) {
+	t.Parallel()
+	r := &stubRunner{out: []byte(`{}`)}
+	s := newSkopeo(r)
+	_, err := s.Inspect(context.Background(), TransportRef{
+		Transport: TransportContainersStorage,
+		Arg1:      "myimg:latest",
+	}, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := [][]string{{"inspect", "containers-storage:myimg:latest"}}
+	if !reflect.DeepEqual(r.got, want) {
+		t.Errorf("argv: got %v, want %v", r.got, want)
+	}
+}
+
+func TestSkopeo_Inspect_SharedBlobDir_Argv(t *testing.T) {
 	t.Parallel()
 	r := &stubRunner{}
 	s := newSkopeo(r)
-	_, err := s.InspectRawShared(context.Background(),
+	_, err := s.Inspect(context.Background(),
 		TransportRef{Transport: TransportOci, Arg1: "/tmp/oci/_tags/v1", Arg2: "ghcr.io/a/b:c"},
-		"/tmp/share")
+		true, "/tmp/share")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,13 +93,19 @@ func TestSkopeo_InspectRawShared_Argv(t *testing.T) {
 	}
 }
 
-func TestSkopeo_InspectRawShared_RejectsNonOci(t *testing.T) {
+func TestSkopeo_Inspect_ExtraArgs_Argv(t *testing.T) {
 	t.Parallel()
-	s := newSkopeo(&stubRunner{})
-	if _, err := s.InspectRawShared(context.Background(),
-		TransportRef{Transport: TransportContainersStorage, Arg1: "x:y"},
-		"/share"); err == nil {
-		t.Error("expected error for non-oci src")
+	r := &stubRunner{}
+	s := newSkopeo(r)
+	_, err := s.Inspect(context.Background(),
+		TransportRef{Transport: TransportContainersStorage, Arg1: "myimg:latest"},
+		false, "", "--config", "--format", "{{.Digest}}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := [][]string{{"inspect", "--config", "--format", "{{.Digest}}", "containers-storage:myimg:latest"}}
+	if !reflect.DeepEqual(r.got, want) {
+		t.Errorf("argv: got %v, want %v", r.got, want)
 	}
 }
 
@@ -217,9 +240,9 @@ func TestSkopeo_PropagatesRunnerError(t *testing.T) {
 	want := errors.New("simulated runner error")
 	r := &stubRunner{err: want}
 	s := newSkopeo(r)
-	_, err := s.InspectRaw(context.Background(), TransportRef{
+	_, err := s.Inspect(context.Background(), TransportRef{
 		Transport: TransportContainersStorage, Arg1: "x:y",
-	})
+	}, true, "")
 	if !errors.Is(err, want) {
 		t.Errorf("expected wrapped %v, got %v", want, err)
 	}

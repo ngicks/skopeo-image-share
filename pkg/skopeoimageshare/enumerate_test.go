@@ -20,7 +20,7 @@ type fakeSkopeoInspector struct {
 	err   error
 }
 
-func (f *fakeSkopeoInspector) InspectRaw(ctx context.Context, src skopeo.TransportRef) ([]byte, error) {
+func (f *fakeSkopeoInspector) Inspect(ctx context.Context, src skopeo.TransportRef, raw bool, sharedBlobDir string, extraArgs ...string) ([]byte, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -60,7 +60,7 @@ func TestEnumerate_ContainersStorage(t *testing.T) {
 		Fs:      fs,
 		BaseDir: tmp,
 	}
-	got, err := Enumerate(context.Background(), cfg)
+	got, err := cfg.Enumerate(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestEnumerate_DockerDaemon_SkipsBadInspect(t *testing.T) {
 		Fs:        fs,
 		BaseDir:   tmp,
 	}
-	got, err := Enumerate(context.Background(), cfg)
+	got, err := cfg.Enumerate(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestEnumerate_OCI_FilesystemWalk(t *testing.T) {
 		Fs:        fs,
 		BaseDir:   tmp,
 	}
-	got, err := Enumerate(context.Background(), cfg)
+	got, err := cfg.Enumerate(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestEnumerate_OCI_FilesystemWalk(t *testing.T) {
 
 func TestEnumerate_BadTransport(t *testing.T) {
 	t.Parallel()
-	if _, err := Enumerate(context.Background(), EnumerateConfig{Transport: "bogus"}); err == nil {
+	if _, err := (EnumerateConfig{Transport: "bogus"}).Enumerate(context.Background()); err == nil {
 		t.Fatal("expected error")
 	}
 }
@@ -167,7 +167,7 @@ func TestEnumerate_OCI_MissingBaseDir_NoError(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := EnumerateConfig{Transport: skopeo.TransportOci, Fs: fs, BaseDir: tmp}
-	got, err := Enumerate(context.Background(), cfg)
+	got, err := cfg.Enumerate(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -55,10 +55,10 @@ type PushArgs struct {
 }
 
 // SkopeoLike abstracts [*skopeo.Skopeo] so tests can substitute a fake.
-// The methods are the four we drive in push/pull orchestration.
+// The methods are the three we drive in push/pull orchestration.
 type SkopeoLike interface {
 	Version(ctx context.Context) (string, error)
-	InspectRaw(ctx context.Context, src skopeo.TransportRef) ([]byte, error)
+	Inspect(ctx context.Context, src skopeo.TransportRef, raw bool, sharedBlobDir string, extraArgs ...string) ([]byte, error)
 	Copy(ctx context.Context, src, dst skopeo.TransportRef, sharedBlobDir string) error
 }
 
@@ -331,7 +331,7 @@ func dumpAndDeriveClosurePush(
 		return mDesc, man, nil
 	}
 
-	raw, err := local.skopeoCli.InspectRaw(ctx, src)
+	raw, err := local.skopeoCli.Inspect(ctx, src, true, "")
 	if err != nil {
 		return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("skopeo inspect --raw: %w", err)
 	}

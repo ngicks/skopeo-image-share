@@ -21,7 +21,7 @@ import (
 // interface lets tests substitute a fake without spinning up a fake
 // skopeo on $PATH.
 type SkopeoInspector interface {
-	InspectRaw(ctx context.Context, src skopeo.TransportRef) ([]byte, error)
+	Inspect(ctx context.Context, src skopeo.TransportRef, raw bool, sharedBlobDir string, extraArgs ...string) ([]byte, error)
 }
 
 // PodmanLister is the [Podman] subset used by enumeration.
@@ -34,7 +34,7 @@ type DockerLister interface {
 	ImageLs(ctx context.Context) ([]string, error)
 }
 
-// EnumerateConfig is the bundle of inputs to [Enumerate].
+// EnumerateConfig is the bundle of inputs to [EnumerateConfig.Enumerate].
 type EnumerateConfig struct {
 	// Transport selects the enumerator. One of
 	// [skopeo.TransportContainersStorage], [skopeo.TransportDockerDaemon],
@@ -65,7 +65,7 @@ type EnumerateConfig struct {
 // union described by PLAN §4.2: `manifest digests` + `config digests`
 // + `layer digests` reachable from peer refs, plus the filename set of
 // `<peer-base>/share/`.
-func Enumerate(ctx context.Context, cfg EnumerateConfig) (map[string]struct{}, error) {
+func (cfg EnumerateConfig) Enumerate(ctx context.Context) (map[string]struct{}, error) {
 	switch cfg.Transport {
 	case skopeo.TransportContainersStorage:
 		return enumerateViaSkopeoInspect(ctx, cfg, cfg.Podman, skopeo.TransportContainersStorage)
@@ -103,13 +103,10 @@ func enumerateViaSkopeoInspect(ctx context.Context, cfg EnumerateConfig, lister 
 	}
 
 	for _, ref := range refs {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		raw, err := cfg.Skopeo.InspectRaw(ctx, skopeo.TransportRef{
+		raw, err := cfg.Skopeo.Inspect(ctx, skopeo.TransportRef{
 			Transport: transport,
 			Arg1:      ref,
-		})
+		}, true, "")
 		if err != nil {
 			logger.LogAttrs(ctx, slog.LevelWarn, "enumerate.inspect.skip",
 				slog.String("transport", string(transport)),
@@ -148,7 +145,7 @@ func enumerateViaSkopeoInspect(ctx context.Context, cfg EnumerateConfig, lister 
 // share pool's filename set.
 func enumerateOCI(ctx context.Context, cfg EnumerateConfig) (map[string]struct{}, error) {
 	if cfg.Fs == nil {
-		return nil, errors.New("enumerate oci: nil FS")
+		return nil, errors.New("enumerate oci: nil Fs")
 	}
 
 	out := map[string]struct{}{}

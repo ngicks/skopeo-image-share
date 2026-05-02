@@ -141,11 +141,11 @@ func run() error {
 }
 
 func refStorePath(s string) string {
-	if before, _, ok := strings.Cut(s, "@sha256"); ok {
-		return before + "/_digests"
+	if before, after, ok := strings.Cut(s, "@sha256:"); ok {
+		return before + "/_digests/" + after
 	}
-	if before, _, ok := strings.Cut(s, ":"); ok {
-		return before + "/_tags"
+	if before, after, ok := strings.Cut(s, ":"); ok {
+		return before + "/_tags/" + after
 	}
 	panic(fmt.Errorf("unknown spec: %q", s))
 }

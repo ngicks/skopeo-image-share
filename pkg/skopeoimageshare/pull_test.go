@@ -136,7 +136,7 @@ func TestPull_AssumeLocalHas_SkipsEnumeration(t *testing.T) {
 		t.Fatal(err)
 	}
 	if localSk.inspectCount.Load() != 0 {
-		t.Errorf("local skopeo InspectRaw called %d, want 0", localSk.inspectCount.Load())
+		t.Errorf("local skopeo Inspect called %d, want 0", localSk.inspectCount.Load())
 	}
 }
 

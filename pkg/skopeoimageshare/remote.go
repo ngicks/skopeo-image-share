@@ -356,7 +356,7 @@ func dumpRemote(ctx context.Context, transport skopeo.Transport, baseDir string,
 	return tagDirAbs, nil
 }
 
-// listAt dispatches to [Enumerate] using the right lister for transport.
+// listAt dispatches to [EnumerateConfig.Enumerate] using the right lister for transport.
 func listAt(ctx context.Context, transport skopeo.Transport, sk SkopeoLike, fs vroot.Fs, baseDir string, lister Lister) (map[string]struct{}, error) {
 	cfg := EnumerateConfig{
 		Transport: transport,
@@ -370,5 +370,5 @@ func listAt(ctx context.Context, transport skopeo.Transport, sk SkopeoLike, fs v
 	case skopeo.TransportDockerDaemon:
 		cfg.Docker = lister
 	}
-	return Enumerate(ctx, cfg)
+	return cfg.Enumerate(ctx)
 }
