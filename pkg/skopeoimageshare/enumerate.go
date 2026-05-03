@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
+	"os"
 	"path"
 
 	"github.com/ngicks/go-common/contextkey"
@@ -86,6 +88,23 @@ type Lister interface {
 	ImageLs(ctx context.Context) ([]string, error)
 }
 
+// listAt dispatches to [EnumerateConfig.Enumerate] using the right lister for transport.
+func listAt(ctx context.Context, transport skopeo.Transport, sk SkopeoLike, fs vroot.Fs, baseDir string, lister Lister) (map[string]struct{}, error) {
+	cfg := EnumerateConfig{
+		Transport: transport,
+		Skopeo:    sk,
+		Fs:        fs,
+		BaseDir:   baseDir,
+	}
+	switch transport {
+	case skopeo.TransportContainersStorage:
+		cfg.Podman = lister
+	case skopeo.TransportDockerDaemon:
+		cfg.Docker = lister
+	}
+	return cfg.Enumerate(ctx)
+}
+
 func enumerateViaSkopeoInspect(ctx context.Context, cfg EnumerateConfig, lister Lister, transport skopeo.Transport) (map[string]struct{}, error) {
 	if lister == nil {
 		return nil, fmt.Errorf("enumerate %s: missing lister", transport)
@@ -160,7 +179,7 @@ func enumerateOCI(ctx context.Context, cfg EnumerateConfig) (map[string]struct{}
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		mDesc, man, err := ocidir.ReadManifest(sharedDir{
+		mDesc, man, err := ocidir.ReadManifest(ctx, sharedDir{
 			fs:       cfg.Fs,
 			dumpDir:  d,
 			shareDir: "share",
@@ -224,19 +243,36 @@ func (d sharedDir) ImageLayout() (v1.ImageLayout, error) {
 	return l, nil
 }
 
-func (d sharedDir) Blob(dg digest.Digest) ([]byte, error) {
+func (d sharedDir) Blob(ctx context.Context, dg digest.Digest, offset int64) (io.ReadCloser, int64, error) {
+	_ = ctx
 	algo, hex, err := ocidir.SplitDigest(string(dg))
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	data, err := vroot.ReadFile(d.fs, path.Join(d.shareDir, algo, hex))
+	file, err := d.fs.OpenFile(path.Join(d.shareDir, algo, hex), os.O_RDONLY, 0)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, fs.ErrNotExist
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, os.ErrNotExist) {
+			return nil, 0, os.ErrNotExist
 		}
-		return nil, err
+		return nil, 0, err
 	}
-	return data, nil
+	fi, err := file.Stat()
+	if err != nil {
+		file.Close()
+		return nil, 0, err
+	}
+	size := fi.Size()
+	if offset < 0 || offset > size {
+		file.Close()
+		return nil, 0, fmt.Errorf("ocidir: offset %d out of range for blob size %d", offset, size)
+	}
+	if offset > 0 {
+		if _, err := file.Seek(offset, io.SeekStart); err != nil {
+			file.Close()
+			return nil, 0, err
+		}
+	}
+	return file, size, nil
 }
 
 // walkDumpDirs walks the FS root listing immediate children, then

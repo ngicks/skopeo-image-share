@@ -2,17 +2,14 @@ package skopeoimageshare
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 
 	"github.com/ngicks/go-common/contextkey"
-	"github.com/ngicks/skopeo-image-share/pkg/cli/skopeo"
 	"github.com/ngicks/skopeo-image-share/pkg/imageref"
 	"github.com/ngicks/skopeo-image-share/pkg/ocidir"
-	"github.com/opencontainers/go-digest"
-	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 // PullArgs configures one [Local.Pull] invocation. Mirror of [PushArgs]
@@ -20,8 +17,6 @@ import (
 // `cmd/skopeo-image-share/commands/pull.go`.
 type PullArgs struct {
 	Images []string
-
-	Jobs int
 
 	DryRun bool
 
@@ -55,6 +50,13 @@ type PullResult struct {
 }
 
 // Pull orchestrates the pull direction (peer → local).
+//
+// Pull assumes ref already exists in the peer's OCI mirror. The peer
+// is treated as a passive content-addressable store; the orchestrator
+// no longer triggers a peer-side `skopeo copy` to materialize the
+// image first. Callers wanting to pull from a peer's live storage
+// (containers-storage / docker-daemon) need to dump it into the
+// peer's mirror separately before calling Pull.
 func (l *Local) Pull(ctx context.Context, args PullArgs, peer Remote) (PullResult, error) {
 	logger := contextkey.ValueSlogLoggerDefault(ctx)
 
@@ -63,14 +65,6 @@ func (l *Local) Pull(ctx context.Context, args PullArgs, peer Remote) (PullResul
 	}
 	if err := l.Validate(ctx); err != nil {
 		return PullResult{}, err
-	}
-	if err := peer.Validate(ctx); err != nil {
-		return PullResult{}, err
-	}
-
-	jobs := args.Jobs
-	if jobs <= 0 {
-		jobs = 4
 	}
 
 	localHas, err := resolveLocalHas(ctx, args, l)
@@ -97,7 +91,7 @@ func (l *Local) Pull(ctx context.Context, args PullArgs, peer Remote) (PullResul
 			}
 			continue
 		}
-		rep := pullOne(ctx, args, l, peer, localHas, ref, jobs)
+		rep := pullOne(ctx, args, l, peer, localHas, ref)
 		result.Reports = append(result.Reports, rep)
 		if rep.Err != nil {
 			result.FailedCount++
@@ -116,15 +110,10 @@ func validatePull(args PullArgs, local *Local, peer Remote) error {
 	if local.transport == "" {
 		return errors.New("pull: local transport unset")
 	}
-	if peer.Transport() == "" {
-		return errors.New("pull: remote transport unset")
-	}
 	if local.baseDir == "" {
 		return errors.New("pull: local base dir unset")
 	}
-	if peer.BaseDir() == "" {
-		return errors.New("pull: remote base dir unset")
-	}
+	_ = peer
 	return nil
 }
 
@@ -149,37 +138,13 @@ func pullOne(
 	peer Remote,
 	localHas map[string]struct{},
 	ref imageref.ImageRef,
-	jobs int,
 ) PullImageReport {
 	logger := contextkey.ValueSlogLoggerDefault(ctx)
 	rep := PullImageReport{Ref: ref, DryRun: args.DryRun}
 
-	remoteStore := NewStore(peer.BaseDir())
-	remoteTagDirNative, err := remoteStore.DumpDir(ref)
+	mDesc, man, err := ocidir.ReadManifest(ctx, peer.Dir().Image(ref))
 	if err != nil {
-		rep.Err = err
-		return rep
-	}
-	remoteTagDirAbs := filepath.ToSlash(remoteTagDirNative)
-	remoteTagDirRel, err := RelDumpDir(ref)
-	if err != nil {
-		rep.Err = err
-		return rep
-	}
-	remoteShareAbs := filepath.ToSlash(remoteStore.ShareDir())
-	remoteShareRel := RelSharePath()
-	localStore := NewStore(local.baseDir)
-	localTagDirAbs, err := localStore.DumpDir(ref)
-	if err != nil {
-		rep.Err = err
-		return rep
-	}
-	localTagDirRel := remoteTagDirRel
-	localShareAbs := localStore.ShareDir()
-
-	mDesc, man, err := dumpAndDeriveClosurePull(ctx, args, peer, ref, remoteTagDirAbs, remoteTagDirRel, remoteShareAbs, remoteShareRel)
-	if err != nil {
-		rep.Err = fmt.Errorf("remote dump: %w", err)
+		rep.Err = fmt.Errorf("read peer manifest: %w", err)
 		return rep
 	}
 
@@ -198,16 +163,10 @@ func pullOne(
 		}
 	}
 
-	if !args.DryRun {
-		if err := transferTagDir(ctx, peer.FS(), remoteTagDirRel, local.fs, localTagDirRel); err != nil {
-			rep.Err = fmt.Errorf("tag-dir sync: %w", err)
-			return rep
-		}
-	}
-
 	digestsSorted := sortedDigests(toFetch)
-	var bytesFetched int64
+
 	if args.DryRun {
+		var bytesFetched int64
 		for _, d := range digestsSorted {
 			bytesFetched += sizes[d]
 		}
@@ -216,95 +175,67 @@ func pullOne(
 			slog.Int("blobs", len(digestsSorted)),
 			slog.Int64("bytes", bytesFetched),
 		)
-	} else {
-		fns := make([]func(context.Context) error, 0, len(digestsSorted))
-		for _, d := range digestsSorted {
-			relPath, err := RelBlobPath(d)
-			if err != nil {
-				rep.Err = err
-				return rep
-			}
-			expectedSize := sizes[d]
-			fns = append(fns, func(ctx context.Context) error {
-				return TransferBlob(ctx, peer.FS(), relPath, local.fs, relPath, expectedSize)
-			})
-		}
-		if err := runTransfers(ctx, jobs, digestsSorted, fns); err != nil {
-			rep.Err = err
-			return rep
-		}
-		for _, d := range digestsSorted {
-			bytesFetched += sizes[d]
-		}
-	}
-	rep.Fetched = len(digestsSorted)
-	rep.BytesFetched = bytesFetched
-
-	if !args.DryRun {
-		if err := local.skopeoCli.Copy(ctx,
-			skopeo.TransportRef{Transport: skopeo.TransportOci, Arg1: localTagDirAbs, Arg2: ref.String()},
-			skopeo.TransportRef{Transport: local.transport, Arg1: ref.String()},
-			localShareAbs,
-		); err != nil {
-			rep.Err = fmt.Errorf("local load: %w", err)
-			return rep
-		}
-	} else {
+		rep.Fetched = len(digestsSorted)
+		rep.BytesFetched = bytesFetched
 		logger.LogAttrs(ctx, slog.LevelInfo, "pull.dry-run.would-load",
 			slog.String("ref", ref.String()),
 		)
+		return rep
+	}
+
+	// 1. Mirror tag-dir metadata files from peer to local
+	if err := mirrorTagFilesFromPeer(ctx, peer.Dir(), ref, local.Dir()); err != nil {
+		rep.Err = fmt.Errorf("tag-dir sync: %w", err)
+		return rep
+	}
+
+	// 2. Stream missing blobs from peer to local
+	res, err := local.Dir().PutBlobs(ctx, blobIter(digestsSorted, sizes, peer.Dir()))
+	if err != nil {
+		rep.Err = fmt.Errorf("put blobs: %w", err)
+		return rep
+	}
+	rep.Fetched = res.Sent
+	rep.BytesFetched = res.BytesSent
+
+	// 3. Load image into local live storage
+	if err := local.LoadImage(ctx, ref); err != nil {
+		rep.Err = fmt.Errorf("local load: %w", err)
+		return rep
 	}
 	return rep
 }
 
-func dumpAndDeriveClosurePull(
-	ctx context.Context,
-	args PullArgs,
-	peer Remote,
-	ref imageref.ImageRef,
-	tagDirAbs, tagDirRel, shareAbs, shareRel string,
-) (v1.Descriptor, v1.Manifest, error) {
-	src := skopeo.TransportRef{
-		Transport: peer.Transport(),
-		Arg1:      ref.String(),
-	}
-
-	if !args.DryRun {
-		if err := peer.FS().MkdirAll(tagDirRel, 0o755); err != nil {
-			return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("mkdir %s: %w", tagDirRel, err)
-		}
-		if err := peer.Skopeo().Copy(ctx, src,
-			skopeo.TransportRef{Transport: skopeo.TransportOci, Arg1: tagDirAbs, Arg2: ref.String()},
-			shareAbs,
-		); err != nil {
-			return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("skopeo copy: %w", err)
-		}
-
-		mDesc, man, err := ocidir.ReadManifest(sharedDir{
-			fs:       peer.FS(),
-			dumpDir:  tagDirRel,
-			shareDir: shareRel,
-		})
-		if err != nil {
-			return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("ocidir: %w", err)
-		}
-		return mDesc, man, nil
-	}
-
-	raw, err := peer.Skopeo().Inspect(ctx, src, true, "")
+// mirrorTagFilesFromPeer reads index.json + oci-layout from peer's
+// tag dir and writes them to local's tag dir via [OciDirs.PutTagFile].
+// Both files are small so reading via [ocidir.DirV1.Blob]-like access
+// isn't appropriate; we read the JSON via the typed accessors and
+// re-marshal.
+func mirrorTagFilesFromPeer(ctx context.Context, src OciDirs, ref imageref.ImageRef, dst OciDirs) error {
+	srcDir := src.Image(ref)
+	idx, err := srcDir.Index()
 	if err != nil {
-		return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("skopeo inspect --raw: %w", err)
+		return fmt.Errorf("read peer index.json: %w", err)
 	}
-	man, err := ocidir.ParseManifest(raw)
+	layout, err := srcDir.ImageLayout()
 	if err != nil {
-		return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("parse manifest: %w", err)
+		return fmt.Errorf("read peer oci-layout: %w", err)
 	}
-	mDesc := v1.Descriptor{
-		MediaType: man.MediaType,
-		Digest:    digest.Digest(ocidir.DigestBytes(raw)),
-		Size:      int64(len(raw)),
+	idxBytes, err := json.MarshalIndent(idx, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal index.json: %w", err)
 	}
-	return mDesc, man, nil
+	layoutBytes, err := json.Marshal(layout)
+	if err != nil {
+		return fmt.Errorf("marshal oci-layout: %w", err)
+	}
+	if err := dst.PutTagFile(ctx, ref, "oci-layout", layoutBytes); err != nil {
+		return fmt.Errorf("put oci-layout: %w", err)
+	}
+	if err := dst.PutTagFile(ctx, ref, "index.json", idxBytes); err != nil {
+		return fmt.Errorf("put index.json: %w", err)
+	}
+	return nil
 }
 
 // SummaryLine returns the human-readable per-image summary string.

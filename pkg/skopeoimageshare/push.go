@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"iter"
 	"log/slog"
-	"path/filepath"
+	"path"
 	"sort"
 
 	"github.com/ngicks/go-common/contextkey"
@@ -23,9 +25,6 @@ import (
 type PushArgs struct {
 	// Images is the list of refs to push (e.g. "ghcr.io/a/b:c").
 	Images []string
-
-	// Jobs is per-blob parallelism; 0 → 4.
-	Jobs int
 
 	// DryRun replaces all mutating operations (local dump, network
 	// transfer, peer load) with read-only equivalents and emits a plan
@@ -86,14 +85,6 @@ func (l *Local) Push(ctx context.Context, args PushArgs, peer Remote) (PushResul
 	if err := l.Validate(ctx); err != nil {
 		return PushResult{}, err
 	}
-	if err := peer.Validate(ctx); err != nil {
-		return PushResult{}, err
-	}
-
-	jobs := args.Jobs
-	if jobs <= 0 {
-		jobs = 4
-	}
 
 	remoteHas, err := resolveRemoteHas(ctx, args, peer)
 	if err != nil {
@@ -120,7 +111,7 @@ func (l *Local) Push(ctx context.Context, args PushArgs, peer Remote) (PushResul
 			continue
 		}
 
-		rep := pushOne(ctx, args, l, peer, remoteHas, ref, jobs)
+		rep := pushOne(ctx, args, l, peer, remoteHas, ref)
 		result.Reports = append(result.Reports, rep)
 		if rep.Err != nil {
 			result.FailedCount++
@@ -140,14 +131,8 @@ func validatePush(args PushArgs, local *Local, peer Remote) error {
 	if local.transport == "" {
 		return errors.New("push: local transport unset")
 	}
-	if peer.Transport() == "" {
-		return errors.New("push: remote transport unset")
-	}
 	if local.baseDir == "" {
 		return errors.New("push: local base dir unset")
-	}
-	if peer.BaseDir() == "" {
-		return errors.New("push: remote base dir unset")
 	}
 	if peer.ReadOnly() {
 		return errors.New("push: peer is read-only")
@@ -168,7 +153,14 @@ func resolveRemoteHas(ctx context.Context, args PushArgs, peer Remote) (map[stri
 		}
 		return ds, nil
 	}
-	return peer.List(ctx)
+	out := make(map[string]struct{})
+	for d, err := range peer.ListBlobs(ctx) {
+		if err != nil {
+			return nil, err
+		}
+		out[string(d)] = struct{}{}
+	}
+	return out, nil
 }
 
 func pushOne(
@@ -178,35 +170,11 @@ func pushOne(
 	peer Remote,
 	remoteHas map[string]struct{},
 	ref imageref.ImageRef,
-	jobs int,
 ) PushImageReport {
 	logger := contextkey.ValueSlogLoggerDefault(ctx)
 	rep := PushImageReport{Ref: ref, DryRun: args.DryRun}
 
-	store := NewStore(local.baseDir)
-	tagDirAbs, err := store.DumpDir(ref)
-	if err != nil {
-		rep.Err = err
-		return rep
-	}
-	tagDirRel, err := RelDumpDir(ref)
-	if err != nil {
-		rep.Err = err
-		return rep
-	}
-	localShareAbs := store.ShareDir()
-	localShareRel := RelSharePath()
-	remoteStore := NewStore(peer.BaseDir())
-	remoteTagDirNative, err := remoteStore.DumpDir(ref)
-	if err != nil {
-		rep.Err = err
-		return rep
-	}
-	remoteTagDirAbs := filepath.ToSlash(remoteTagDirNative)
-	remoteTagDirRel := tagDirRel
-	remoteShareAbs := filepath.ToSlash(remoteStore.ShareDir())
-
-	mDesc, man, err := dumpAndDeriveClosurePush(ctx, args, local, ref, tagDirAbs, tagDirRel, localShareAbs, localShareRel)
+	mDesc, man, err := dumpAndDeriveClosurePush(ctx, args, local, ref)
 	if err != nil {
 		rep.Err = fmt.Errorf("dump: %w", err)
 		return rep
@@ -227,17 +195,10 @@ func pushOne(
 		}
 	}
 
-	if !args.DryRun {
-		if err := transferTagDir(ctx, local.fs, tagDirRel, peer.FS(), remoteTagDirRel); err != nil {
-			rep.Err = fmt.Errorf("tag-dir sync: %w", err)
-			return rep
-		}
-	}
-
 	digestsSorted := sortedDigests(toSend)
 
-	var bytesSent int64
 	if args.DryRun {
+		var bytesSent int64
 		for _, d := range digestsSorted {
 			bytesSent += sizes[d]
 		}
@@ -246,43 +207,33 @@ func pushOne(
 			slog.Int("blobs", len(digestsSorted)),
 			slog.Int64("bytes", bytesSent),
 		)
-	} else {
-		fns := make([]func(context.Context) error, 0, len(digestsSorted))
-		for _, d := range digestsSorted {
-			relPath, err := RelBlobPath(d)
-			if err != nil {
-				rep.Err = err
-				return rep
-			}
-			expectedSize := sizes[d]
-			fns = append(fns, func(ctx context.Context) error {
-				return TransferBlob(ctx, local.fs, relPath, peer.FS(), relPath, expectedSize)
-			})
-		}
-		if err := runTransfers(ctx, jobs, digestsSorted, fns); err != nil {
-			rep.Err = err
-			return rep
-		}
-		for _, d := range digestsSorted {
-			bytesSent += sizes[d]
-		}
-	}
-	rep.Sent = len(digestsSorted)
-	rep.BytesSent = bytesSent
-
-	if !args.DryRun {
-		if err := peer.Skopeo().Copy(ctx,
-			skopeo.TransportRef{Transport: skopeo.TransportOci, Arg1: remoteTagDirAbs, Arg2: ref.String()},
-			skopeo.TransportRef{Transport: peer.Transport(), Arg1: ref.String()},
-			remoteShareAbs,
-		); err != nil {
-			rep.Err = fmt.Errorf("remote load: %w", err)
-			return rep
-		}
-	} else {
+		rep.Sent = len(digestsSorted)
+		rep.BytesSent = bytesSent
 		logger.LogAttrs(ctx, slog.LevelInfo, "push.dry-run.would-load",
 			slog.String("ref", ref.String()),
 		)
+		return rep
+	}
+
+	// 1. Mirror tag-dir metadata files to the peer
+	if err := mirrorTagFiles(ctx, local.fs, ref, peer.Dir()); err != nil {
+		rep.Err = fmt.Errorf("tag-dir sync: %w", err)
+		return rep
+	}
+
+	// 2. Stream missing blobs to the peer
+	res, err := peer.Dir().PutBlobs(ctx, blobIter(digestsSorted, sizes, local.Dir()))
+	if err != nil {
+		rep.Err = fmt.Errorf("put blobs: %w", err)
+		return rep
+	}
+	rep.Sent = res.Sent
+	rep.BytesSent = res.BytesSent
+
+	// 3. Load image on peer (mirror → live storage)
+	if err := peer.LoadImage(ctx, ref); err != nil {
+		rep.Err = fmt.Errorf("remote load: %w", err)
+		return rep
 	}
 	return rep
 }
@@ -296,7 +247,6 @@ func dumpAndDeriveClosurePush(
 	args PushArgs,
 	local *Local,
 	ref imageref.ImageRef,
-	tagDirAbs, tagDirRel, localShareAbs, localShareRel string,
 ) (v1.Descriptor, v1.Manifest, error) {
 	src := skopeo.TransportRef{
 		Transport: local.transport,
@@ -304,25 +254,25 @@ func dumpAndDeriveClosurePush(
 	}
 
 	if !args.DryRun {
+		store := NewStore(local.baseDir)
+		tagDirAbs, err := store.DumpDir(ref)
+		if err != nil {
+			return v1.Descriptor{}, v1.Manifest{}, err
+		}
+		tagDirRel, err := RelDumpDir(ref)
+		if err != nil {
+			return v1.Descriptor{}, v1.Manifest{}, err
+		}
 		if err := local.fs.MkdirAll(tagDirRel, 0o755); err != nil {
 			return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("mkdir %s: %w", tagDirRel, err)
 		}
 		if err := local.skopeoCli.Copy(ctx, src,
 			skopeo.TransportRef{Transport: skopeo.TransportOci, Arg1: tagDirAbs, Arg2: ref.String()},
-			localShareAbs,
+			store.ShareDir(),
 		); err != nil {
 			return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("skopeo copy: %w", err)
 		}
-
-		mDesc, man, err := ocidir.ReadManifest(sharedDir{
-			fs:       local.fs,
-			dumpDir:  tagDirRel,
-			shareDir: localShareRel,
-		})
-		if err != nil {
-			return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("ocidir: %w", err)
-		}
-		return mDesc, man, nil
+		return ocidir.ReadManifest(ctx, local.Dir().Image(ref))
 	}
 
 	raw, err := local.skopeoCli.Inspect(ctx, src, true, "")
@@ -339,6 +289,47 @@ func dumpAndDeriveClosurePush(
 		Size:      int64(len(raw)),
 	}
 	return mDesc, man, nil
+}
+
+// mirrorTagFiles ships oci-layout + index.json from srcFS's per-ref
+// tag dir to dst (the destination [OciDirs]).
+func mirrorTagFiles(ctx context.Context, srcFS vroot.Fs, ref imageref.ImageRef, dst OciDirs) error {
+	rel, err := RelDumpDir(ref)
+	if err != nil {
+		return err
+	}
+	for _, name := range []string{"oci-layout", "index.json"} {
+		data, err := vroot.ReadFile(srcFS, path.Join(rel, name))
+		if err != nil {
+			return fmt.Errorf("read %s: %w", name, err)
+		}
+		if err := dst.PutTagFile(ctx, ref, name, data); err != nil {
+			return fmt.Errorf("put %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// blobIter wraps src's per-digest [OciDirs.Blob] reads as an iterator
+// of [BlobUpload] suitable for [OciDirs.PutBlobs].
+func blobIter(digestsSorted []string, sizes map[string]int64, src OciDirs) iter.Seq2[BlobUpload, error] {
+	return func(yield func(BlobUpload, error) bool) {
+		for _, d := range digestsSorted {
+			dg := digest.Digest(d)
+			size := sizes[d]
+			bu := BlobUpload{
+				Digest: dg,
+				Size:   size,
+				Open: func(ctx context.Context, off int64) (io.ReadCloser, error) {
+					rc, _, err := src.Blob(ctx, dg, off)
+					return rc, err
+				},
+			}
+			if !yield(bu, nil) {
+				return
+			}
+		}
+	}
 }
 
 // descriptorDigestSet returns the digest set of every descriptor.
@@ -361,13 +352,6 @@ func descriptorSizes(descs []v1.Descriptor) map[string]int64 {
 		}
 	}
 	return out
-}
-
-// transferTagDir ships oci-layout + index.json from srcDir to dstDir
-// using atomic tmp+rename.
-func transferTagDir(ctx context.Context, srcFS vroot.Fs, srcDir string, dstFS vroot.Fs, dstDir string) error {
-	return CopyTagDirSmallFiles(ctx, srcFS, srcDir, dstFS, dstDir,
-		[]string{"oci-layout", "index.json"})
 }
 
 // sortedDigests returns ds in lexical order so transfer scheduling is

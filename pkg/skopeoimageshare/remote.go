@@ -5,7 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"iter"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -13,63 +16,52 @@ import (
 
 	"github.com/ngicks/go-fsys-helper/vroot"
 	"github.com/ngicks/skopeo-image-share/pkg/cli"
-	"github.com/ngicks/skopeo-image-share/pkg/cli/docker"
 	"github.com/ngicks/skopeo-image-share/pkg/cli/skopeo"
 	"github.com/ngicks/skopeo-image-share/pkg/cli/ssh"
 	"github.com/ngicks/skopeo-image-share/pkg/imageref"
 	"github.com/ngicks/skopeo-image-share/pkg/sftpfs"
+	"github.com/opencontainers/go-digest"
 	"github.com/pkg/sftp"
 )
 
-// Remote is the abstract peer that [Local.Push] and [Local.Pull]
-// drive. The SSH+SFTP-backed implementation returned by [NewRemote]
-// satisfies it; custom transports (a different network transport, a
-// read-only registry mirror, an in-memory test double) plug in by
-// implementing this interface.
+// ErrReadOnly is returned by [Remote.LoadImage] and the write side of
+// [OciDirs] when the peer is read-only.
+var ErrReadOnly = errors.New("remote: read-only")
+
+// Remote is an OCI store the orchestrator can read from and (when not
+// read-only) write to. The SSH+SFTP-backed implementation returned by
+// [NewRemote] satisfies it; custom transports (S3, an HTTP mirror, an
+// in-memory test double) plug in by implementing this interface.
 //
-// Read-only implementations return true from [Remote.ReadOnly]. The
-// orchestrator refuses to push to a read-only peer; pull operations
-// that would mutate the peer (the `skopeo copy` dump step) fail
-// naturally via the underlying transport.
+// Read-only implementations return true from [Remote.ReadOnly].
+// Mutating operations on read-only peers return [ErrReadOnly].
 type Remote interface {
 	// Close releases any subsystem resources (e.g. the ssh+sftp
 	// subprocess for [NewRemote]). Safe to call multiple times.
 	Close() error
 
-	// BaseDir is the absolute path of the peer's data dir
-	// (`<base>` in the on-disk layout described under [Store]).
-	BaseDir() string
-	// Transport is one of [skopeo.TransportContainersStorage],
-	// [skopeo.TransportDockerDaemon], or [skopeo.TransportOci].
-	Transport() skopeo.Transport
-	// OCIPath is the path passed via `oci:<dir>`; only meaningful when
-	// Transport == [skopeo.TransportOci].
-	OCIPath() string
-	// Skopeo is the skopeo wrapper bound to this peer.
-	Skopeo() SkopeoLike
-	// FS is rooted at BaseDir; orchestrator-facing paths are FS-relative.
-	FS() vroot.Fs
-	// Lister is the docker / podman wrapper for live image
-	// enumeration. Returns nil for [skopeo.TransportOci].
-	Lister() Lister
 	// ReadOnly reports whether mutating operations targeting this peer
 	// should be rejected.
 	ReadOnly() bool
 
-	// Validate runs peer-side sanity checks (e.g. confirms the remote
-	// skopeo is present and runnable). Implementations are expected to
-	// be cheap to call repeatedly — typically by caching the first
-	// successful result. [Local.Push] / [Local.Pull] call this before
-	// any work happens.
-	Validate(ctx context.Context) error
+	// Dir returns the multi-image OCI store this Remote backs.
+	Dir() OciDirs
 
-	// Dump runs `skopeo copy <Transport>:<ref> oci:<store-tag-dir>`,
-	// staging ref into the peer's store layout. Returns the absolute
-	// peer-side tag directory.
-	Dump(ctx context.Context, ref imageref.ImageRef) (string, error)
-	// List returns the digest set of every blob the peer has,
-	// including the share/ inventory.
-	List(ctx context.Context) (map[string]struct{}, error)
+	// ListBlobs enumerates every content-addressed blob the peer
+	// holds: image manifests, image configs, and fs layers across all
+	// images stored in this Remote. Order is unspecified.
+	ListBlobs(ctx context.Context) iter.Seq2[digest.Digest, error]
+
+	// ListImages enumerates the image refs this Remote hosts. Use
+	// Dir().Image(ref) to read each image's per-image OCI layout.
+	ListImages(ctx context.Context) iter.Seq2[imageref.ImageRef, error]
+
+	// LoadImage tells the peer to load ref's content from its OCI
+	// mirror into its live storage (containers-storage / docker-
+	// daemon / etc.). Returns [ErrReadOnly] when the peer is read-
+	// only; returns nil (no-op) when the peer has no live storage to
+	// load into (e.g., a pure OCI mirror).
+	LoadImage(ctx context.Context, ref imageref.ImageRef) error
 }
 
 // RemoteConfig configures [NewRemote].
@@ -77,7 +69,10 @@ type Remote interface {
 //   - Target is the SSH destination (required).
 //   - Transport is required: one of [skopeo.TransportContainersStorage],
 //     [skopeo.TransportDockerDaemon], or [skopeo.TransportOci].
-//   - OCIPath is required when Transport == [skopeo.TransportOci].
+//     For TransportOci, [Remote.LoadImage] is a no-op (the peer has
+//     no live storage to load into).
+//   - OCIPath is required when Transport == [skopeo.TransportOci];
+//     it is the absolute path on the peer where the OCI store lives.
 type RemoteConfig struct {
 	Target    ssh.Target
 	Transport skopeo.Transport
@@ -93,7 +88,6 @@ var _ Remote = (*sshRemote)(nil)
 type sshRemote struct {
 	baseDir   string
 	transport skopeo.Transport
-	ociPath   string
 
 	target ssh.Target
 	runner *cli.SshRunner
@@ -106,17 +100,15 @@ type sshRemote struct {
 	cancelWatch context.CancelFunc
 
 	skopeoCli SkopeoLike
-	lister    Lister
 	fs        vroot.Fs
-
-	validateOnce sync.Once
-	validateErr  error
+	dirs      *FsOciDirs
 }
 
 // NewRemote spawns `ssh -s sftp`, wires its pipes into a sftp client
 // via [sftp.NewClientPipe], starts the force-close goroutine, then
-// resolves BaseDir on the remote and builds the remote skopeo wrapper +
-// a transport-appropriate lister + an FS rooted at BaseDir.
+// resolves BaseDir on the remote and builds an FS rooted at BaseDir
+// plus the [OciDirs] view over it (parallelism =
+// [DefaultRemoteParallelism]).
 func NewRemote(ctx context.Context, cfg RemoteConfig) (Remote, error) {
 	if cfg.Transport == "" {
 		return nil, errors.New("remote: transport unset")
@@ -141,7 +133,6 @@ func NewRemote(ctx context.Context, cfg RemoteConfig) (Remote, error) {
 	}
 	r := &sshRemote{
 		transport: cfg.Transport,
-		ociPath:   cfg.OCIPath,
 		target:    cfg.Target,
 		runner:    cli.NewSshRunner(cfg.Target),
 		sftpCmd:   cmd,
@@ -149,7 +140,7 @@ func NewRemote(ctx context.Context, cfg RemoteConfig) (Remote, error) {
 	}
 	r.startWatch(ctx)
 
-	base, err := r.resolveBaseDir(ctx)
+	base, err := r.resolveBaseDir(ctx, cfg.OCIPath)
 	if err != nil {
 		_ = r.Close()
 		return nil, fmt.Errorf("remote: resolve base dir: %w", err)
@@ -157,12 +148,7 @@ func NewRemote(ctx context.Context, cfg RemoteConfig) (Remote, error) {
 	r.baseDir = base
 	r.fs = sftpfs.New(sftpC, base)
 	r.skopeoCli = &skopeo.Skopeo{Runner: cli.NewSshRunner(cfg.Target)}
-	switch cfg.Transport {
-	case skopeo.TransportContainersStorage:
-		r.lister = docker.NewPodman(cli.NewSshRunner(cfg.Target))
-	case skopeo.TransportDockerDaemon:
-		r.lister = docker.NewDocker(cli.NewSshRunner(cfg.Target))
-	}
+	r.dirs = NewFsOciDirs(r.fs, DefaultRemoteParallelism)
 	return r, nil
 }
 
@@ -263,10 +249,16 @@ func (r *sshRemote) runRemote(ctx context.Context, argv []string) ([]byte, error
 	return r.runner.Run(ctx, argv)
 }
 
-// resolveBaseDir returns the remote's
-// `${XDG_DATA_HOME:-$HOME/.local/share}/skopeo-image-share` path.
-// printf is used (no trailing newline) for clean parsing.
-func (r *sshRemote) resolveBaseDir(ctx context.Context) (string, error) {
+// resolveBaseDir returns the on-peer base dir. For transport != oci it
+// is `${XDG_DATA_HOME:-$HOME/.local/share}/skopeo-image-share`. For
+// transport == oci it is the explicit OCIPath.
+func (r *sshRemote) resolveBaseDir(ctx context.Context, ociPath string) (string, error) {
+	if r.transport == skopeo.TransportOci {
+		if ociPath == "" {
+			return "", errors.New("remote: oci transport requires OCIPath")
+		}
+		return ociPath, nil
+	}
 	out, err := r.runRemote(ctx, []string{
 		"sh", "-c",
 		`printf %s "${XDG_DATA_HOME:-$HOME/.local/share}/` + AppDirName + `"`,
@@ -281,94 +273,137 @@ func (r *sshRemote) resolveBaseDir(ctx context.Context) (string, error) {
 	return base, nil
 }
 
-// BaseDir implements [Remote].
-func (r *sshRemote) BaseDir() string { return r.baseDir }
-
-// Transport implements [Remote].
-func (r *sshRemote) Transport() skopeo.Transport { return r.transport }
-
-// OCIPath implements [Remote].
-func (r *sshRemote) OCIPath() string { return r.ociPath }
-
-// Skopeo implements [Remote].
-func (r *sshRemote) Skopeo() SkopeoLike { return r.skopeoCli }
-
-// FS implements [Remote].
-func (r *sshRemote) FS() vroot.Fs { return r.fs }
-
-// Lister implements [Remote].
-func (r *sshRemote) Lister() Lister { return r.lister }
-
 // ReadOnly implements [Remote]. The SSH-backed remote always reports
 // false; build a custom [Remote] to surface a read-only peer.
 func (r *sshRemote) ReadOnly() bool { return false }
 
-// Validate implements [Remote]: confirms the remote skopeo binary
-// runs. Cached after the first invocation.
-func (r *sshRemote) Validate(ctx context.Context) error {
-	r.validateOnce.Do(func() {
-		if _, err := r.skopeoCli.Version(ctx); err != nil {
-			r.validateErr = fmt.Errorf("remote skopeo: %w", err)
-		}
-	})
-	return r.validateErr
+// Dir implements [Remote].
+func (r *sshRemote) Dir() OciDirs { return r.dirs }
+
+// ListBlobs implements [Remote]: walks `share/sha256/*` on the peer's
+// FS and yields every digest found.
+func (r *sshRemote) ListBlobs(ctx context.Context) iter.Seq2[digest.Digest, error] {
+	return listBlobsFromFs(ctx, r.fs)
 }
 
-// Dump implements [Remote].
-func (r *sshRemote) Dump(ctx context.Context, ref imageref.ImageRef) (string, error) {
-	if err := r.Validate(ctx); err != nil {
-		return "", err
+// ListImages implements [Remote]: walks the peer's per-image dump
+// dirs and yields each parsed [imageref.ImageRef].
+func (r *sshRemote) ListImages(ctx context.Context) iter.Seq2[imageref.ImageRef, error] {
+	return listImagesFromFs(ctx, r.fs)
+}
+
+// LoadImage implements [Remote] by running `skopeo copy oci:<dump-dir>
+// <transport>:<ref>` on the peer. No-op when transport == oci.
+func (r *sshRemote) LoadImage(ctx context.Context, ref imageref.ImageRef) error {
+	if r.transport == skopeo.TransportOci {
+		return nil
 	}
-	return dumpRemote(ctx, r.transport, r.baseDir, r.skopeoCli, r.fs, ref)
-}
-
-// List implements [Remote].
-func (r *sshRemote) List(ctx context.Context) (map[string]struct{}, error) {
-	return listAt(ctx, r.transport, r.skopeoCli, r.fs, r.baseDir, r.lister)
-}
-
-// dumpRemote dumps ref into the peer's oci-layout. Mirrors
-// [Local.Dump] but slash-normalizes the absolute paths handed to the
-// remote skopeo CLI (peer's filesystem is POSIX even when the host
-// running this binary is not).
-func dumpRemote(ctx context.Context, transport skopeo.Transport, baseDir string, sk SkopeoLike, fs vroot.Fs, ref imageref.ImageRef) (string, error) {
-	store := NewStore(baseDir)
-	tagDirNative, err := store.DumpDir(ref)
+	rel, err := RelDumpDir(ref)
 	if err != nil {
-		return "", err
+		return err
 	}
-	tagDirAbs := filepath.ToSlash(tagDirNative)
-	tagDirRel, err := RelDumpDir(ref)
-	if err != nil {
-		return "", err
-	}
-	shareAbs := filepath.ToSlash(store.ShareDir())
-	if err := fs.MkdirAll(tagDirRel, 0o755); err != nil {
-		return "", fmt.Errorf("dump: mkdir %s: %w", tagDirRel, err)
-	}
-	if err := sk.Copy(ctx,
-		skopeo.TransportRef{Transport: transport, Arg1: ref.String()},
+	tagDirAbs := filepath.ToSlash(filepath.Join(r.baseDir, filepath.FromSlash(rel)))
+	shareAbs := filepath.ToSlash(filepath.Join(r.baseDir, "share"))
+	if err := r.skopeoCli.Copy(ctx,
 		skopeo.TransportRef{Transport: skopeo.TransportOci, Arg1: tagDirAbs, Arg2: ref.String()},
+		skopeo.TransportRef{Transport: r.transport, Arg1: ref.String()},
 		shareAbs,
 	); err != nil {
-		return "", fmt.Errorf("dump: skopeo copy: %w", err)
+		return fmt.Errorf("remote: load image %s: %w", ref.String(), err)
 	}
-	return tagDirAbs, nil
+	return nil
 }
 
-// listAt dispatches to [EnumerateConfig.Enumerate] using the right lister for transport.
-func listAt(ctx context.Context, transport skopeo.Transport, sk SkopeoLike, fs vroot.Fs, baseDir string, lister Lister) (map[string]struct{}, error) {
-	cfg := EnumerateConfig{
-		Transport: transport,
-		Skopeo:    sk,
-		Fs:        fs,
-		BaseDir:   baseDir,
+// listBlobsFromFs walks fs/share/sha256/* and yields each digest.
+func listBlobsFromFs(ctx context.Context, fsys vroot.Fs) iter.Seq2[digest.Digest, error] {
+	return func(yield func(digest.Digest, error) bool) {
+		algoDir := path.Join(RelSharePath(), "sha256")
+		entries, err := vroot.ReadDir(fsys, algoDir)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return
+			}
+			yield(digest.Digest(""), err)
+			return
+		}
+		for _, e := range entries {
+			if err := ctx.Err(); err != nil {
+				yield(digest.Digest(""), err)
+				return
+			}
+			if e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if len(name) != digest.SHA256.Size()*2 {
+				continue
+			}
+			if !yield(digest.Digest(digest.SHA256.String()+":"+name), nil) {
+				return
+			}
+		}
 	}
-	switch transport {
-	case skopeo.TransportContainersStorage:
-		cfg.Podman = lister
-	case skopeo.TransportDockerDaemon:
-		cfg.Docker = lister
+}
+
+// listImagesFromFs walks fs for <host>/<repo>/_tags/<tag> and
+// _digests/<hex> dump dirs and yields the parsed [imageref.ImageRef].
+func listImagesFromFs(ctx context.Context, fsys vroot.Fs) iter.Seq2[imageref.ImageRef, error] {
+	return func(yield func(imageref.ImageRef, error) bool) {
+		dumps, err := walkDumpDirs(fsys, ".")
+		if err != nil {
+			yield(imageref.ImageRef{}, err)
+			return
+		}
+		for _, d := range dumps {
+			if err := ctx.Err(); err != nil {
+				yield(imageref.ImageRef{}, err)
+				return
+			}
+			ref, err := parseDumpDirRel(d)
+			if err != nil {
+				if !yield(imageref.ImageRef{}, fmt.Errorf("parse %q: %w", d, err)) {
+					return
+				}
+				continue
+			}
+			if !yield(ref, nil) {
+				return
+			}
+		}
 	}
-	return cfg.Enumerate(ctx)
+}
+
+// parseDumpDirRel parses an FS-relative dump-dir path
+// `<host>/<repo>/_tags/<tag>` or `<host>/<repo>/_digests/<hex>` into
+// the corresponding [imageref.ImageRef].
+func parseDumpDirRel(rel string) (imageref.ImageRef, error) {
+	if marker, leaf, ok := splitOn(rel, "/_tags/"); ok {
+		host, repoPath, ok := strings.Cut(marker, "/")
+		if !ok || host == "" || repoPath == "" {
+			return imageref.ImageRef{}, fmt.Errorf("missing host/path in %q", rel)
+		}
+		ref := imageref.ImageRef{Host: host, Path: repoPath, Tag: leaf}
+		ref.Original = ref.String()
+		return ref, nil
+	}
+	if marker, leaf, ok := splitOn(rel, "/_digests/"); ok {
+		host, repoPath, ok := strings.Cut(marker, "/")
+		if !ok || host == "" || repoPath == "" {
+			return imageref.ImageRef{}, fmt.Errorf("missing host/path in %q", rel)
+		}
+		ref := imageref.ImageRef{Host: host, Path: repoPath, Digest: leaf}
+		ref.Original = ref.String()
+		return ref, nil
+	}
+	return imageref.ImageRef{}, fmt.Errorf("path has no _tags/_digests marker")
+}
+
+// splitOn splits s at sep, returning the (before, after, ok) triple.
+// Like [strings.Cut] but for an arbitrary separator.
+func splitOn(s, sep string) (before, after string, ok bool) {
+	i := strings.Index(s, sep)
+	if i < 0 {
+		return "", "", false
+	}
+	return s[:i], s[i+len(sep):], true
 }

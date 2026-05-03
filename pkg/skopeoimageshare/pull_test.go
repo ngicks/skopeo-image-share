@@ -27,12 +27,7 @@ func TestPull_HappyPath(t *testing.T) {
 	}
 
 	local := newLocal(localFS, localBase, localSk)
-	remote := &fakeRemote{
-		baseDir:   remoteBase,
-		transport: skopeo.TransportContainersStorage,
-		skopeoCli: peerSk,
-		fs:        remoteFS,
-	}
+	remote := newFakeRemote(remoteBase, skopeo.TransportContainersStorage, peerSk, remoteFS)
 
 	res, err := local.Pull(context.Background(), PullArgs{
 		Images:            []string{"ghcr.io/a/b:v1"},
@@ -44,11 +39,13 @@ func TestPull_HappyPath(t *testing.T) {
 	if res.FailedCount != 0 {
 		t.Fatalf("FailedCount=%d, reports=%+v", res.FailedCount, res.Reports)
 	}
-	if peerSk.copyToCount.Load() != 1 {
-		t.Errorf("peer skopeo CopyToOCI called %d, want 1", peerSk.copyToCount.Load())
+	// Peer is now a passive mirror — Pull no longer triggers a peer-side
+	// dump, so peer skopeo should not have been called.
+	if peerSk.copyToCount.Load() != 0 {
+		t.Errorf("peer skopeo CopyToOCI called %d, want 0 (peer is passive mirror)", peerSk.copyToCount.Load())
 	}
 	if localSk.copyFromCount.Load() != 1 {
-		t.Errorf("local skopeo CopyFromOCI called %d, want 1", localSk.copyFromCount.Load())
+		t.Errorf("local skopeo CopyFromOCI (LoadImage) called %d, want 1", localSk.copyFromCount.Load())
 	}
 	for _, hex := range []string{strings.Repeat("d", 64), strings.Repeat("1", 64), strings.Repeat("a", 64), strings.Repeat("b", 64)} {
 		if _, err := os.Stat(filepath.Join(localBase, "share", "sha256", hex)); err != nil {
@@ -69,16 +66,15 @@ func TestPull_DryRun_NoMutationsAnywhere(t *testing.T) {
 	}
 	localSk := &recordingSkopeo{}
 
+	tagDir := filepath.Join(remoteBase, "ghcr.io", "a", "b", "_tags", "v1")
+	shareDir := filepath.Join(remoteBase, "share")
+	seedDump(t, tagDir, shareDir)
+
 	beforeLocal := snapshotDir(t, localBase)
 	beforeRemote := snapshotDir(t, remoteBase)
 
 	local := newLocal(localFS, localBase, localSk)
-	remote := &fakeRemote{
-		baseDir:   remoteBase,
-		transport: skopeo.TransportContainersStorage,
-		skopeoCli: peerSk,
-		fs:        remoteFS,
-	}
+	remote := newFakeRemote(remoteBase, skopeo.TransportContainersStorage, peerSk, remoteFS)
 
 	res, err := local.Pull(context.Background(), PullArgs{
 		Images:            []string{"ghcr.io/a/b:v1"},
@@ -121,12 +117,7 @@ func TestPull_AssumeLocalHas_SkipsEnumeration(t *testing.T) {
 
 	localSk := &recordingSkopeo{}
 	local := newLocal(localFS, localBase, localSk)
-	remote := &fakeRemote{
-		baseDir:   remoteBase,
-		transport: skopeo.TransportContainersStorage,
-		skopeoCli: &recordingSkopeo{copyTo: func(_ context.Context, _, _ skopeo.TransportRef, _ string) error { return nil }},
-		fs:        remoteFS,
-	}
+	remote := newFakeRemote(remoteBase, skopeo.TransportContainersStorage, &recordingSkopeo{copyTo: func(_ context.Context, _, _ skopeo.TransportRef, _ string) error { return nil }}, remoteFS)
 
 	_, err := local.Pull(context.Background(), PullArgs{
 		Images:         []string{"ghcr.io/a/b:v1"},
@@ -153,12 +144,7 @@ func TestPull_ResumeFromInterruptedPart(t *testing.T) {
 	must(t, os.WriteFile(partPath, []byte("L"), 0o644))
 
 	local := newLocal(localFS, localBase, &recordingSkopeo{})
-	remote := &fakeRemote{
-		baseDir:   remoteBase,
-		transport: skopeo.TransportContainersStorage,
-		skopeoCli: &recordingSkopeo{copyTo: func(ctx context.Context, _, _ skopeo.TransportRef, _ string) error { return nil }},
-		fs:        remoteFS,
-	}
+	remote := newFakeRemote(remoteBase, skopeo.TransportContainersStorage, &recordingSkopeo{copyTo: func(ctx context.Context, _, _ skopeo.TransportRef, _ string) error { return nil }}, remoteFS)
 
 	res, err := local.Pull(context.Background(), PullArgs{
 		Images:            []string{"ghcr.io/a/b:v1"},

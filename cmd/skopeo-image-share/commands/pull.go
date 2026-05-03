@@ -21,7 +21,6 @@ var pullFlags struct {
 	remoteTransport string
 	remotePath      string
 	localDumpDir    string
-	jobs            int
 	dryRun          bool
 	assumeLocalHas  []string
 	keepGoing       bool
@@ -39,7 +38,6 @@ func init() {
 	f.StringVar(&pullFlags.localDumpDir, "local-dumpdir", "",
 		"base of the local on-disk store layout; "+
 			"when empty, falls back to ${XDG_DATA_HOME:-$HOME/.local/share}/skopeo-image-share")
-	f.IntVar(&pullFlags.jobs, "jobs", 4, "per-blob parallelism")
 	f.BoolVar(&pullFlags.dryRun, "dry-run", false, "no mutation; emit a plan instead")
 	f.StringSliceVar(&pullFlags.assumeLocalHas, "assume-local-has", nil, "raw blob digests local already has (skips enumeration)")
 	f.BoolVar(&pullFlags.keepGoing, "keep-going", false, "continue on per-image failure")
@@ -66,7 +64,6 @@ func runPull(cmd *cobra.Command, args []string) error {
 
 	res, err := share.Pull(ctx, skopeoimageshare.PullArgs{
 		Images:         args,
-		Jobs:           pullFlags.jobs,
 		DryRun:         pullFlags.dryRun,
 		AssumeLocalHas: pullFlags.assumeLocalHas,
 		KeepGoing:      pullFlags.keepGoing,

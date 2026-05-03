@@ -1,6 +1,7 @@
 package ocidir
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"os"
@@ -68,7 +69,7 @@ func TestReadManifest_Local(t *testing.T) {
 				t.Errorf("ImageLayout.Version empty")
 			}
 
-			mDesc, man, err := ReadManifest(dir)
+			mDesc, man, err := ReadManifest(context.Background(), dir)
 			if err != nil {
 				t.Fatalf("ReadManifest: %v", err)
 			}
@@ -122,7 +123,7 @@ func TestReadManifest_MissingManifestBlob(t *testing.T) {
 		t.Fatal(err)
 	}
 	// (no manifest blob)
-	_, _, err := ReadManifest(NewFsDir(mustFs(t, root)))
+	_, _, err := ReadManifest(context.Background(), NewFsDir(mustFs(t, root)))
 	if !errors.Is(err, ErrMissingManifestBlob) {
 		t.Fatalf("expected ErrMissingManifestBlob, got %v", err)
 	}

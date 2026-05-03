@@ -1,10 +1,11 @@
 package ocidir
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
+	"io"
 	"os"
 	"path"
 
@@ -25,10 +26,15 @@ type DirV1 interface {
 	Index() (v1.Index, error)
 	// ImageLayout parses `oci-layout` and returns the typed [v1.ImageLayout].
 	ImageLayout() (v1.ImageLayout, error)
-	// Blob reads the blob with the given digest from the dir's blob
-	// pool. Returns [fs.ErrNotExist] when missing.
-	Blob(d digest.Digest) ([]byte, error)
+	// Blob returns a reader for the blob with the given digest, seeked
+	// to offset. size is the total blob size (not bytes remaining from
+	// offset); callers comparing against a descriptor compare
+	// descriptor.Size against size, not against bytes consumed from rc.
+	// Returns [os.ErrNotExist] when the blob is missing.
+	Blob(ctx context.Context, d digest.Digest, offset int64) (rc io.ReadCloser, size int64, err error)
 }
+
+var _ DirV1 = (*FsDir)(nil)
 
 // FsDir is a [DirV1] backed by a [vroot.Fs] rooted at an OCI dir.
 // Blobs are read from the spec-default `blobs/<algo>/<hex>` location.
@@ -76,20 +82,16 @@ func (d FsDir) ImageLayout() (v1.ImageLayout, error) {
 }
 
 // Blob implements [DirV1].
-func (d FsDir) Blob(dg digest.Digest) ([]byte, error) {
+func (d FsDir) Blob(ctx context.Context, dg digest.Digest, offset int64) (io.ReadCloser, int64, error) {
+	_ = ctx
 	algo, hex, err := SplitDigest(string(dg))
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	data, err := vroot.ReadFile(d.fs, path.Join("blobs", algo, hex))
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, os.ErrNotExist) {
-			return nil, os.ErrNotExist
-		}
-		return nil, err
-	}
-	return data, nil
+	return OpenSeekedBlob(d.fs, path.Join("blobs", algo, hex), offset)
 }
+
+var _ DirV1 = (*SharedFsDir)(nil)
 
 // SharedFsDir pairs a [DirV1] (typically an [FsDir] rooted at the
 // dump dir, providing Index + ImageLayout) with a separate
@@ -118,19 +120,39 @@ func (d SharedFsDir) Index() (v1.Index, error) { return d.dir.Index() }
 func (d SharedFsDir) ImageLayout() (v1.ImageLayout, error) { return d.dir.ImageLayout() }
 
 // Blob implements [DirV1] reading from the dedicated blob FS.
-func (d SharedFsDir) Blob(dg digest.Digest) ([]byte, error) {
+func (d SharedFsDir) Blob(_ context.Context, dg digest.Digest, offset int64) (io.ReadCloser, int64, error) {
 	algo, hex, err := SplitDigest(string(dg))
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	data, err := vroot.ReadFile(d.blobs, path.Join(algo, hex))
+	return OpenSeekedBlob(d.blobs, path.Join(algo, hex), offset)
+}
+
+// OpenSeekedBlob opens relPath on f, stats it for size, and seeks to
+// offset. Returns [os.ErrNotExist] when the blob is missing. Helper
+// for [DirV1] implementations backed by a [vroot.Fs].
+func OpenSeekedBlob(f vroot.Fs, relPath string, offset int64) (io.ReadCloser, int64, error) {
+	file, err := f.OpenFile(relPath, os.O_RDONLY, 0)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, os.ErrNotExist) {
-			return nil, os.ErrNotExist
-		}
-		return nil, err
+		return nil, 0, err
 	}
-	return data, nil
+	fi, err := file.Stat()
+	if err != nil {
+		file.Close()
+		return nil, 0, err
+	}
+	size := fi.Size()
+	if offset < 0 || offset > size {
+		file.Close()
+		return nil, 0, fmt.Errorf("ocidir: offset %d out of range for blob size %d", offset, size)
+	}
+	if offset > 0 {
+		if _, err := file.Seek(offset, io.SeekStart); err != nil {
+			file.Close()
+			return nil, 0, err
+		}
+	}
+	return file, size, nil
 }
 
 // ErrMissingManifestBlob is returned by [ReadManifest] when the
@@ -142,7 +164,7 @@ var ErrMissingManifestBlob = errors.New("ocidir: manifest blob missing from blob
 // descriptor, loads the manifest blob from the dir's blob pool, parses
 // it, and returns the descriptor (size + digest + mediaType from the
 // index) plus the parsed manifest body.
-func ReadManifest(dir DirV1) (v1.Descriptor, v1.Manifest, error) {
+func ReadManifest(ctx context.Context, dir DirV1) (v1.Descriptor, v1.Manifest, error) {
 	idx, err := dir.Index()
 	if err != nil {
 		return v1.Descriptor{}, v1.Manifest{}, err
@@ -152,11 +174,17 @@ func ReadManifest(dir DirV1) (v1.Descriptor, v1.Manifest, error) {
 		return v1.Descriptor{}, v1.Manifest{}, errors.New("ocidir: index.json manifest has no digest")
 	}
 
-	mData, err := dir.Blob(mDesc.Digest)
+	rc, _, err := dir.Blob(ctx, mDesc.Digest, 0)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("%w: digest=%s", ErrMissingManifestBlob, mDesc.Digest)
 		}
+		return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("ocidir: read manifest blob %s: %w", mDesc.Digest, err)
+	}
+	defer rc.Close()
+
+	mData, err := io.ReadAll(rc)
+	if err != nil {
 		return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("ocidir: read manifest blob %s: %w", mDesc.Digest, err)
 	}
 	man, err := ParseManifest(mData)

@@ -28,10 +28,16 @@ type Local struct {
 	skopeoCli SkopeoLike
 	lister    Lister
 	fs        vroot.Fs
+	dirs      *FsOciDirs
 
 	validateOnce sync.Once
 	validateErr  error
 }
+
+// DefaultLocalParallelism is the default upload concurrency for the
+// local-side [OciDirs] (used when sourcing blobs into the local mirror
+// during pull).
+const DefaultLocalParallelism = 4
 
 // LocalConfig configures [NewLocal].
 //
@@ -74,6 +80,7 @@ func NewLocal(ctx context.Context, cfg LocalConfig) (*Local, error) {
 		ociPath:   cfg.OCIPath,
 		skopeoCli: &skopeo.Skopeo{Runner: cli.NewLocalRunner()},
 		fs:        fs,
+		dirs:      NewFsOciDirs(fs, DefaultLocalParallelism),
 	}
 	switch cfg.Transport {
 	case skopeo.TransportContainersStorage:
@@ -99,6 +106,10 @@ func (l *Local) Skopeo() SkopeoLike { return l.skopeoCli }
 
 // FS returns the local [vroot.Fs] rooted at BaseDir.
 func (l *Local) FS() vroot.Fs { return l.fs }
+
+// Dir returns the local [OciDirs] view (the multi-image OCI store
+// rooted at BaseDir).
+func (l *Local) Dir() OciDirs { return l.dirs }
 
 // Lister returns the local docker / podman wrapper, or nil for
 // [skopeo.TransportOci].
@@ -151,4 +162,30 @@ func (l *Local) Dump(ctx context.Context, ref imageref.ImageRef) (string, error)
 // local's images, plus the share/ inventory.
 func (l *Local) List(ctx context.Context) (map[string]struct{}, error) {
 	return listAt(ctx, l.transport, l.skopeoCli, l.fs, l.baseDir, l.lister)
+}
+
+// LoadImage runs `skopeo copy oci:<dump-dir> <local-transport>:<ref>`,
+// loading ref's content from the local OCI mirror into the local live
+// storage (containers-storage / docker-daemon). No-op when local
+// transport is oci.
+func (l *Local) LoadImage(ctx context.Context, ref imageref.ImageRef) error {
+	if l.transport == skopeo.TransportOci {
+		return nil
+	}
+	if err := l.Validate(ctx); err != nil {
+		return err
+	}
+	store := NewStore(l.baseDir)
+	tagDirAbs, err := store.DumpDir(ref)
+	if err != nil {
+		return err
+	}
+	if err := l.skopeoCli.Copy(ctx,
+		skopeo.TransportRef{Transport: skopeo.TransportOci, Arg1: tagDirAbs, Arg2: ref.String()},
+		skopeo.TransportRef{Transport: l.transport, Arg1: ref.String()},
+		store.ShareDir(),
+	); err != nil {
+		return fmt.Errorf("local: load image %s: %w", ref.String(), err)
+	}
+	return nil
 }
